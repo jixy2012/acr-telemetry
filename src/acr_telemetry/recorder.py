@@ -115,14 +115,25 @@ class RunStats:
 class Recorder:
     out_dir: Path
     hz: int = 100
+    # Sampling only needs to be fast while there is something to sample. The
+    # physics page is dark in menus and on the results screen, so the loop
+    # drops to idle_hz there and steps up the moment it goes live — which
+    # happens when you are sitting in the car, before the launch, so no part
+    # of a run is missed.
+    idle_hz: int = 10
     idle_stop_s: float = 1.5
     verbose: bool = True
-    # packetId ticks at ~330 Hz whenever the game is alive — including on the
-    # results screen with an all-zero physics payload. A frozen counter
-    # therefore means the game has quit or is hard-paused, which is the only
-    # reliable "game is gone" signal: our own mapped view keeps the shared
-    # memory object alive after the game closes its handle, so reads would
-    # otherwise return stale data forever.
+    # The PHYSICS packetId ticks at ~330 Hz whenever the game is alive,
+    # including on the results screen with an all-zero payload, so a frozen
+    # one means the game has quit or is hard-paused. This is the only reliable
+    # "game is gone" signal: our own mapped view keeps the shared memory object
+    # alive after the game closes its handle, so reads would otherwise return
+    # stale data forever.
+    #
+    # Use physics, NOT graphics. The graphics packetId sits frozen for long
+    # stretches — it read an identical value across an entire session of
+    # probing — so watching it makes the logger drop and re-attach every few
+    # seconds, truncating any run in progress.
     disconnect_after_s: float = 8.0
 
     _writer: csv.writer | None = field(default=None, init=False, repr=False)
@@ -274,7 +285,8 @@ class Recorder:
 
     # ---- inner loop: one attached session ---------------------------------
     def _session(self, conn: GameConnection) -> None:
-        period = 1.0 / self.hz
+        fast_period = 1.0 / self.hz
+        idle_period = 1.0 / self.idle_hz
         static = conn.static.read()
         gfx = conn.graphics.read()
 
@@ -292,7 +304,7 @@ class Recorder:
         t0 = 0.0
         last_time_str = ""
 
-        heartbeat_packet = gfx.packetId
+        heartbeat_packet = conn.physics.read().packetId
         heartbeat_at = time.perf_counter()
 
         try:
@@ -303,8 +315,8 @@ class Recorder:
                 live = phys.is_live
 
                 # Detect the game going away.
-                if gfx.packetId != heartbeat_packet:
-                    heartbeat_packet = gfx.packetId
+                if phys.packetId != heartbeat_packet:
+                    heartbeat_packet = phys.packetId
                     heartbeat_at = loop_start
                 elif loop_start - heartbeat_at >= self.disconnect_after_s:
                     return
@@ -349,6 +361,7 @@ class Recorder:
                         recording = False
                         idle_since = None
 
+                period = fast_period if live else idle_period
                 elapsed = time.perf_counter() - loop_start
                 if elapsed < period:
                     time.sleep(period - elapsed)
