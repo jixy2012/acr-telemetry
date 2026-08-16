@@ -157,6 +157,12 @@ class Recorder:
     # suspended run is a real event -- a different stage, a rewound clock, a
     # jump in position, the game closing, or the logger stopping.
     resume_tolerance_m: float = 50.0
+    # A restart from the in-game menu can put the car back on the start line
+    # without ever darkening physics for long enough to suspend the run. Left
+    # unhandled it concatenates two attempts into one file, with distance
+    # jumping backwards mid-stream. Distance falling by more than this, or the
+    # stage clock rewinding, means a new attempt has begun.
+    restart_drop_m: float = 100.0
     # Graphics lags physics going live, so the distance read in the first
     # instants after a resume is still the pre-pause value. Buffer briefly and
     # decide on a settled reading; buffered samples are kept either way.
@@ -467,6 +473,12 @@ class Recorder:
                             stats = RunStats(
                                 started_at=datetime.now().isoformat(timespec="seconds")
                             )
+                            # Clear the clock for a genuinely new run. The
+                            # no-rewind guard is scoped to one run; carrying a
+                            # previous run's time across would make the guard
+                            # reject the whole of the next run's clock, and
+                            # every run would inherit the first one's time.
+                            last_time_str = ""
                             # Restart this run's clock at the first held sample.
                             offset = pending[0][0] if pending else 0.0
                             for row in pending:
@@ -485,6 +497,34 @@ class Recorder:
 
                 elif live and recording:
                     idle_since = None
+
+                    # Restart detected without physics ever going dark.
+                    dist_now = gfx.distanceTraveled
+                    clock_now = parse_stage_time(gfx.currentTime)
+                    clock_was = parse_stage_time(last_time_str)
+                    if stats.start_dist is not None and (
+                        dist_now < stats.end_dist - self.restart_drop_m
+                        or (
+                            clock_now is not None
+                            and clock_was is not None
+                            and clock_now < clock_was - 5.0
+                        )
+                    ):
+                        self._say(
+                            f"↻ restart detected at {dist_now:,.0f}m "
+                            f"(was {stats.end_dist:,.0f}m) — splitting run"
+                        )
+                        self._finish(static, gfx, stats, drive_clock, last_time_str)
+                        static = conn.static.read()
+                        path = self._open_run(static, gfx)
+                        stats = RunStats(
+                            started_at=datetime.now().isoformat(timespec="seconds")
+                        )
+                        last_time_str = gfx.currentTime or ""
+                        drive_clock = 0.0
+                        last_packet = None
+                        self._say(f"▶ recording  {path.name}")
+
                     if phys.packetId == last_packet:
                         stats.dropped_duplicates += 1
                     else:
