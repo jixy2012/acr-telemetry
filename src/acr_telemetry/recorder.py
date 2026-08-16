@@ -92,6 +92,25 @@ HEADER = (
 )
 
 
+def parse_stage_time(text: str) -> float | None:
+    """Parse the game's formatted stage clock, e.g. "01:24.079" -> 84.079.
+
+    ACR leaves iCurrentTime at 0, so this string is the only place the stage
+    time exists. A value that has gone backwards means the stage was restarted
+    rather than unpaused.
+    """
+    if not text:
+        return None
+    try:
+        parts = text.strip().split(":")
+        seconds = float(parts[-1])
+        for i, chunk in enumerate(reversed(parts[:-1])):
+            seconds += float(chunk) * (60 ** (i + 1))
+        return seconds
+    except (ValueError, IndexError):
+        return None
+
+
 def _slug(text: str) -> str:
     text = re.sub(r"[^\w\s-]", "", text).strip()
     text = re.sub(r"[\s_]+", "-", text)
@@ -130,11 +149,13 @@ class Recorder:
     verbose: bool = True
     # Pausing darkens the physics page exactly like finishing a stage does,
     # and ACR leaves graphics.status at 0 so the AC pause enum cannot tell them
-    # apart. Instead a run is only suspended when physics goes dark, and is
-    # resumed if physics returns near the same point on the same stage. A
-    # restart resets distance to the start line, which lands far outside the
-    # tolerance and correctly opens a new run.
-    resume_window_s: float = 300.0
+    # apart. A run therefore suspends rather than finalising, and resumes only
+    # if the game comes back on the same stage, near the same point, with the
+    # stage clock not rewound. There is deliberately no time limit on how long
+    # a pause may last: a timeout would finalise a long pause and then split
+    # the stage on resume, which is the exact bug this avoids. What ends a
+    # suspended run is a real event -- a different stage, a rewound clock, a
+    # jump in position, the game closing, or the logger stopping.
     resume_tolerance_m: float = 50.0
     # Graphics lags physics going live, so the distance read in the first
     # instants after a resume is still the pre-pause value. Buffer briefly and
@@ -236,12 +257,21 @@ class Recorder:
         self._fh = self._path.open("a", newline="", encoding="utf-8")
         self._writer = csv.writer(self._fh)
 
-    def _suspend_file(self) -> None:
-        """Close the handle but keep _path, so the run can be resumed."""
+    def _suspend_file(self, static, stats: RunStats, duration: float,
+                      time_str: str) -> None:
+        """Close the handle but keep _path, so the run can be resumed.
+
+        The sidecar is written now rather than deferred, so a suspended run is
+        never missing its metadata. It is rewritten if the run resumes. This is
+        what removes any need for a timeout on how long a pause may last.
+        """
         if self._fh is not None:
             self._fh.close()
             self._fh = None
             self._writer = None
+        stats.duration_s = duration
+        stats.stage_time = time_str
+        self._write_meta(static, stats)
 
     def _open_run(self, static, gfx) -> Path:
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -258,6 +288,10 @@ class Recorder:
             self._fh.close()
             self._fh = None
             self._writer = None
+        self._write_meta(static, stats)
+        self._path = None
+
+    def _write_meta(self, static, stats: RunStats) -> None:
         if self._path is None:
             return
         meta = {
@@ -283,7 +317,6 @@ class Recorder:
         self._path.with_suffix(".json").write_text(
             json.dumps(meta, indent=2), encoding="utf-8"
         )
-        self._path = None
 
     # ---- outer loop: survive the game not running --------------------------
     def run(self) -> None:
@@ -346,6 +379,7 @@ class Recorder:
         suspend_at = 0.0
         suspend_dist = 0.0
         suspend_stage = ""
+        suspend_time: float | None = None   # stage clock, to catch a restart
         pending: list[list] = []   # samples held while deciding resume vs. new run
         pending_since = 0.0
 
@@ -396,11 +430,20 @@ class Recorder:
                     if loop_start - pending_since >= self.resume_decision_s:
                         static = conn.static.read()
                         dist_now = gfx.distanceTraveled
+                        # A restart near where you crashed can land inside the
+                        # distance tolerance, so the stage clock is the
+                        # tie-breaker: it only ever rewinds on a restart.
+                        now_t = parse_stage_time(gfx.currentTime)
+                        rewound = (
+                            suspend_time is not None
+                            and now_t is not None
+                            and now_t < suspend_time - 1.0
+                        )
                         is_resume = (
                             suspended
                             and static.track == suspend_stage
                             and abs(dist_now - suspend_dist) <= self.resume_tolerance_m
-                            and loop_start - suspend_at <= self.resume_window_s
+                            and not rewound
                         )
                         if is_resume:
                             paused = loop_start - suspend_at
@@ -454,21 +497,20 @@ class Recorder:
                         idle_since = loop_start
                     elif loop_start - idle_since >= self.idle_stop_s:
                         # Might be a pause, might be the end. Suspend and see.
-                        self._suspend_file()
+                        self._suspend_file(
+                            static, stats, drive_clock, last_time_str
+                        )
                         recording = False
                         suspended = True
                         suspend_at = idle_since
                         suspend_dist = stats.end_dist
                         suspend_stage = static.track
+                        suspend_time = parse_stage_time(last_time_str)
                         idle_since = None
                         self._say(
                             f"⏸ suspended  {stats.samples:,} samples so far "
                             f"(resumes if you unpause)"
                         )
-
-                elif suspended and loop_start - suspend_at > self.resume_window_s:
-                    self._finish(static, gfx, stats, drive_clock, last_time_str)
-                    suspended = False
 
                 period = fast_period if live else idle_period
                 elapsed = time.perf_counter() - loop_start
