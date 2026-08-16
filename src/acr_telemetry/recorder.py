@@ -276,6 +276,19 @@ class Recorder:
                 time.sleep(2.0)
                 continue
 
+            # The shared memory object briefly outlives the game process, so a
+            # successful open right after a quit can hand back a torn-down
+            # segment with an empty static page. Attaching to that would let a
+            # run be filed under no car and no stage, so wait it out instead.
+            static = conn.static.read()
+            if static.trackSplineLength <= 0.0 or not static.carModel:
+                conn.close()
+                if not announced_wait:
+                    self._say("game present but no stage loaded — waiting…")
+                    announced_wait = True
+                time.sleep(2.0)
+                continue
+
             announced_wait = False
             try:
                 self._session(conn)
