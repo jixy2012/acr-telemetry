@@ -103,7 +103,10 @@ class RunStats:
     """Counters only — never a substitute for the trace."""
 
     samples: int = 0
-    start_dist: float = 0.0
+    # None until the first sample is written. The graphics page lags physics
+    # going live by a few frames, so reading distance at run-start returns the
+    # PREVIOUS run's final value and makes a restart look like a continuation.
+    start_dist: float | None = None
     end_dist: float = 0.0
     stage_time: str = ""
     started_at: str = ""
@@ -240,9 +243,9 @@ class Recorder:
             "duration_s": round(stats.duration_s, 2),
             "samples": stats.samples,
             "dropped_duplicates": stats.dropped_duplicates,
-            "start_distance_m": round(stats.start_dist, 2),
+            "start_distance_m": round(stats.start_dist or 0.0, 2),
             "end_distance_m": round(stats.end_dist, 2),
-            "distance_covered_m": round(stats.end_dist - stats.start_dist, 2),
+            "distance_covered_m": round(stats.end_dist - (stats.start_dist or 0.0), 2),
             # ACR leaves iCurrentTime at 0, so the formatted string is the only
             # place the stage time exists.
             "stage_time": stats.stage_time,
@@ -342,7 +345,6 @@ class Recorder:
                     path = self._open_run(static, gfx)
                     recording = True
                     stats = RunStats(
-                        start_dist=gfx.distanceTraveled,
                         started_at=datetime.now().isoformat(timespec="seconds"),
                     )
                     t0 = time.perf_counter()
@@ -363,6 +365,8 @@ class Recorder:
                             )
                         )
                         stats.samples += 1
+                        if stats.start_dist is None:
+                            stats.start_dist = gfx.distanceTraveled
                         stats.end_dist = gfx.distanceTraveled
 
                 elif recording and not live:
