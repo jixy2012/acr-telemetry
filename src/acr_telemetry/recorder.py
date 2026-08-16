@@ -73,9 +73,23 @@ PER_WHEEL_CHANNELS = [
     "mz",
 ]
 
-HEADER = SCALAR_CHANNELS + [
-    f"{ch}_{w}" for ch in PER_WHEEL_CHANNELS for w in WHEELS
-]
+# Road geometry, not car dynamics. Four world-space points on the road surface
+# per frame, plus their surface normals — driving the stage surveys it. Fit a
+# plane through the contact points for camber and gradient; accumulate them
+# across a run for the road's centreline, elevation profile and curvature.
+PER_WHEEL_XYZ_CHANNELS = ["contact", "contact_normal"]
+AXES = ("x", "y", "z")
+
+HEADER = (
+    SCALAR_CHANNELS
+    + [f"{ch}_{w}" for ch in PER_WHEEL_CHANNELS for w in WHEELS]
+    + [
+        f"{ch}_{w}_{a}"
+        for ch in PER_WHEEL_XYZ_CHANNELS
+        for w in WHEELS
+        for a in AXES
+    ]
+)
 
 
 def _slug(text: str) -> str:
@@ -169,6 +183,16 @@ class Recorder:
                 "mz": phys.mz,
             }[name]
             row.extend(round(src[i], 4) for i in range(4))
+
+        for name in PER_WHEEL_XYZ_CHANNELS:
+            src = {
+                "contact": phys.tyreContactPoint,
+                "contact_normal": phys.tyreContactNormal,
+            }[name]
+            for i in range(4):
+                row.extend(
+                    (round(src[i].x, 4), round(src[i].y, 4), round(src[i].z, 4))
+                )
         return row
 
     # ---- file lifecycle ---------------------------------------------------
@@ -205,7 +229,7 @@ class Recorder:
             # place the stage time exists.
             "stage_time": stats.stage_time,
             "csv": self._path.name,
-            "schema_version": 1,
+            "schema_version": 2,
         }
         self._path.with_suffix(".json").write_text(
             json.dumps(meta, indent=2), encoding="utf-8"
