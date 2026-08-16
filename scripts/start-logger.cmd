@@ -8,8 +8,10 @@ REM waiting when the game closes. It never needs to be restarted by hand.
 cd /d "%~dp0.."
 if not exist "runs" mkdir "runs"
 
+REM Prefer uv from PATH. The fallback matters for contexts that do not inherit
+REM the user PATH; winget installs uv into Packages\, not Links\.
 set "UV=uv"
-where uv >nul 2>&1 || set "UV=%LOCALAPPDATA%\Microsoft\WinGet\Links\uv.exe"
+where uv >nul 2>&1 || set "UV=%LOCALAPPDATA%\Microsoft\WinGet\Packages\astral-sh.uv_Microsoft.Winget.Source_8wekyb3d8bbwe\uv.exe"
 
 echo [%date% %time%] logger starting >> "runs\logger.log"
 "%UV%" run acr-telemetry log --hz 100 >> "runs\logger.log" 2>&1
