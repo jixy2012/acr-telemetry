@@ -112,6 +112,8 @@ class RunStats:
     started_at: str = ""
     duration_s: float = 0.0
     dropped_duplicates: int = 0
+    pauses: int = 0
+    paused_s: float = 0.0
 
 
 @dataclass
@@ -126,6 +128,18 @@ class Recorder:
     idle_hz: int = 10
     idle_stop_s: float = 1.5
     verbose: bool = True
+    # Pausing darkens the physics page exactly like finishing a stage does,
+    # and ACR leaves graphics.status at 0 so the AC pause enum cannot tell them
+    # apart. Instead a run is only suspended when physics goes dark, and is
+    # resumed if physics returns near the same point on the same stage. A
+    # restart resets distance to the start line, which lands far outside the
+    # tolerance and correctly opens a new run.
+    resume_window_s: float = 300.0
+    resume_tolerance_m: float = 50.0
+    # Graphics lags physics going live, so the distance read in the first
+    # instants after a resume is still the pre-pause value. Buffer briefly and
+    # decide on a settled reading; buffered samples are kept either way.
+    resume_decision_s: float = 0.6
     # The PHYSICS packetId ticks at ~330 Hz whenever the game is alive,
     # including on the results screen with an all-zero payload, so a frozen
     # one means the game has quit or is hard-paused. This is the only reliable
@@ -217,6 +231,18 @@ class Recorder:
         return row
 
     # ---- file lifecycle ---------------------------------------------------
+    def _reopen_run(self) -> None:
+        """Re-open the current run's CSV to append after a pause."""
+        self._fh = self._path.open("a", newline="", encoding="utf-8")
+        self._writer = csv.writer(self._fh)
+
+    def _suspend_file(self) -> None:
+        """Close the handle but keep _path, so the run can be resumed."""
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None
+            self._writer = None
+
     def _open_run(self, static, gfx) -> Path:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
@@ -243,6 +269,8 @@ class Recorder:
             "duration_s": round(stats.duration_s, 2),
             "samples": stats.samples,
             "dropped_duplicates": stats.dropped_duplicates,
+            "pauses": stats.pauses,
+            "paused_s": round(stats.paused_s, 1),
             "start_distance_m": round(stats.start_dist or 0.0, 2),
             "end_distance_m": round(stats.end_dist, 2),
             "distance_covered_m": round(stats.end_dist - (stats.start_dist or 0.0), 2),
@@ -314,10 +342,18 @@ class Recorder:
         self._say("waiting for the car to move…\n")
 
         recording = False
+        suspended = False          # run open on disk, waiting to see if this is a pause
+        suspend_at = 0.0
+        suspend_dist = 0.0
+        suspend_stage = ""
+        pending: list[list] = []   # samples held while deciding resume vs. new run
+        pending_since = 0.0
+
         stats = RunStats()
         last_packet = None
         idle_since = None
-        t0 = 0.0
+        drive_clock = 0.0          # advances only while physics is live
+        last_tick = time.perf_counter()
         last_time_str = ""
 
         heartbeat_packet = conn.physics.read().packetId
@@ -340,19 +376,64 @@ class Recorder:
                 if gfx.currentTime:
                     last_time_str = gfx.currentTime
 
-                if not recording and live:
-                    static = conn.static.read()
-                    path = self._open_run(static, gfx)
-                    recording = True
-                    stats = RunStats(
-                        started_at=datetime.now().isoformat(timespec="seconds"),
-                    )
-                    t0 = time.perf_counter()
-                    last_packet = None
-                    idle_since = None
-                    self._say(f"▶ recording  {path.name}")
+                if live:
+                    drive_clock += loop_start - last_tick
+                last_tick = loop_start
 
-                elif recording and live:
+                if live and not recording:
+                    # Hold samples briefly so the resume decision is made on a
+                    # settled distance reading rather than a lagging one.
+                    if not pending:
+                        pending_since = loop_start
+                    if phys.packetId != last_packet:
+                        last_packet = phys.packetId
+                        pending.append(
+                            self.extract(
+                                phys, gfx, static.trackSplineLength, drive_clock
+                            )
+                        )
+
+                    if loop_start - pending_since >= self.resume_decision_s:
+                        static = conn.static.read()
+                        dist_now = gfx.distanceTraveled
+                        is_resume = (
+                            suspended
+                            and static.track == suspend_stage
+                            and abs(dist_now - suspend_dist) <= self.resume_tolerance_m
+                            and loop_start - suspend_at <= self.resume_window_s
+                        )
+                        if is_resume:
+                            paused = loop_start - suspend_at
+                            stats.pauses += 1
+                            stats.paused_s += paused
+                            self._reopen_run()
+                            self._say(f"▶ resumed    after {paused:.0f}s paused")
+                        else:
+                            if suspended:
+                                self._finish(
+                                    static, gfx, stats, drive_clock, last_time_str
+                                )
+                            path = self._open_run(static, gfx)
+                            stats = RunStats(
+                                started_at=datetime.now().isoformat(timespec="seconds")
+                            )
+                            # Restart this run's clock at the first held sample.
+                            offset = pending[0][0] if pending else 0.0
+                            for row in pending:
+                                row[0] = round(row[0] - offset, 4)
+                            drive_clock -= offset
+                            self._say(f"▶ recording  {path.name}")
+
+                        for row in pending:
+                            self._writer.writerow(row)
+                            stats.samples += 1
+                        if pending and stats.start_dist is None:
+                            stats.start_dist = dist_now
+                        stats.end_dist = dist_now
+                        pending.clear()
+                        recording, suspended, idle_since = True, False, None
+
+                elif live and recording:
                     idle_since = None
                     if phys.packetId == last_packet:
                         stats.dropped_duplicates += 1
@@ -360,8 +441,7 @@ class Recorder:
                         last_packet = phys.packetId
                         self._writer.writerow(
                             self.extract(
-                                phys, gfx, static.trackSplineLength,
-                                time.perf_counter() - t0,
+                                phys, gfx, static.trackSplineLength, drive_clock
                             )
                         )
                         stats.samples += 1
@@ -370,25 +450,36 @@ class Recorder:
                         stats.end_dist = gfx.distanceTraveled
 
                 elif recording and not live:
-                    now = time.perf_counter()
                     if idle_since is None:
-                        idle_since = now
-                    elif now - idle_since >= self.idle_stop_s:
-                        self._finish(static, gfx, stats, idle_since - t0, last_time_str)
+                        idle_since = loop_start
+                    elif loop_start - idle_since >= self.idle_stop_s:
+                        # Might be a pause, might be the end. Suspend and see.
+                        self._suspend_file()
                         recording = False
+                        suspended = True
+                        suspend_at = idle_since
+                        suspend_dist = stats.end_dist
+                        suspend_stage = static.track
                         idle_since = None
+                        self._say(
+                            f"⏸ suspended  {stats.samples:,} samples so far "
+                            f"(resumes if you unpause)"
+                        )
+
+                elif suspended and loop_start - suspend_at > self.resume_window_s:
+                    self._finish(static, gfx, stats, drive_clock, last_time_str)
+                    suspended = False
 
                 period = fast_period if live else idle_period
                 elapsed = time.perf_counter() - loop_start
                 if elapsed < period:
                     time.sleep(period - elapsed)
         finally:
-            # Never lose a run in progress to a quit, a crash or Ctrl+C.
-            if recording:
+            # Never lose a run to a quit, a crash or Ctrl+C.
+            if recording or suspended:
                 self._finish(
-                    static, gfx, stats,
-                    time.perf_counter() - t0, last_time_str,
-                    note=" (interrupted)",
+                    static, gfx, stats, drive_clock, last_time_str,
+                    note="" if suspended else " (interrupted)",
                 )
 
     def _finish(self, static, gfx, stats: RunStats, duration: float,
