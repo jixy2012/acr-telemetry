@@ -407,8 +407,15 @@ class Recorder:
                 elif loop_start - heartbeat_at >= self.disconnect_after_s:
                     return
 
+                # Keep the stage clock, but never let it rewind mid-run. The
+                # game resets currentTime to 00:00.000 when a stage reloads,
+                # and that can land between physics going dark and the run
+                # being finalised — which filed a completed run as 00:00.000.
                 if gfx.currentTime:
-                    last_time_str = gfx.currentTime
+                    new_t = parse_stage_time(gfx.currentTime)
+                    prev_t = parse_stage_time(last_time_str)
+                    if new_t is None or prev_t is None or new_t >= prev_t:
+                        last_time_str = gfx.currentTime
 
                 if live:
                     drive_clock += loop_start - last_tick

@@ -106,9 +106,16 @@ def report(path: Path) -> None:
             print(f"  slip_angle_{w:<11} min {min(sa):>10.2f}   max {max(sa):>10.2f}   deg")
 
     # ---- 4. road geometry: are the contact points real? ------------------
-    print(f"\n[4] ROAD GEOMETRY  (contact points, never validated before)")
+    print(f"\n[4] ROAD GEOMETRY  (grounded samples only)")
     wheelbase, track, planarity, normlen = [], [], [], []
+    airborne = 0
     for r in rows:
+        # A contact point only describes the road while the wheel is on it.
+        # Airborne and mid-crash frames produce garbage geometry — a 5 m track
+        # width, a non-unit normal — so exclude them rather than average them in.
+        if min(fnum(r, f"wheel_load_{w}") for w in WHEELS) <= 1.0:
+            airborne += 1
+            continue
         p = {}
         ok = True
         for w in WHEELS:
@@ -147,6 +154,8 @@ def report(path: Path) -> None:
             normlen.append(norm(nv))
 
     if wheelbase:
+        print(f"  grounded samples      {len(wheelbase):,} of {len(rows):,}"
+              f"   ({100*airborne/len(rows):.1f}% airborne//crashing, excluded)")
         describe("wheelbase FL-RL", wheelbase, "m")
         describe("track FL-FR", track, "m")
         describe("RR off FL/FR/RL plane", planarity, "m")
