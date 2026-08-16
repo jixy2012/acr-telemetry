@@ -1,0 +1,15 @@
+# captured telemetry — large, personal, and regenerable only by driving
+runs/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.uv/
+dist/
+build/
+*.egg-info/
+
+# editors
+.vscode/
+.idea/
