@@ -16,9 +16,19 @@ uv run acr-telemetry status   # what is the game publishing right now?
 uv run acr-telemetry log      # record runs until Ctrl+C
 ```
 
-Start `log` before you drive. It waits for the car to move, records the run,
-writes it out when you stop, and goes back to waiting. Leave it running for a
-whole session.
+`log` can be started at any time — **including before the game is running**. It
+waits for Assetto Corsa Rally to appear, records every stage run, and goes back
+to waiting when the game closes. It never needs restarting by hand, and a run in
+progress is always written out even if the game quits or you Ctrl+C mid-stage.
+
+### Starting it automatically
+
+Put a shortcut to [`scripts/start-logger-hidden.vbs`](scripts/start-logger-hidden.vbs)
+in your Startup folder (`Win+R` → `shell:startup`). It launches with no console
+window and logs to `runs/logger.log`. While idle it polls twice a second and
+costs nothing.
+
+To stop it auto-starting, delete the shortcut.
 
 Output lands in `runs/`:
 

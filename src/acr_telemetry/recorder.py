@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .shm import GameConnection, sanity_check
+from .shm import GameConnection, SegmentUnavailable, sanity_check
 
 # Per-sample columns. Order defines the CSV header; `extract` below must match.
 WHEELS = ("fl", "fr", "rl", "rr")
@@ -117,6 +117,13 @@ class Recorder:
     hz: int = 100
     idle_stop_s: float = 1.5
     verbose: bool = True
+    # packetId ticks at ~330 Hz whenever the game is alive — including on the
+    # results screen with an all-zero physics payload. A frozen counter
+    # therefore means the game has quit or is hard-paused, which is the only
+    # reliable "game is gone" signal: our own mapped view keeps the shared
+    # memory object alive after the game closes its handle, so reads would
+    # otherwise return stale data forever.
+    disconnect_after_s: float = 8.0
 
     _writer: csv.writer | None = field(default=None, init=False, repr=False)
     _fh: object | None = field(default=None, init=False, repr=False)
@@ -236,43 +243,77 @@ class Recorder:
         )
         self._path = None
 
-    # ---- main loop --------------------------------------------------------
+    # ---- outer loop: survive the game not running --------------------------
     def run(self) -> None:
+        """Run forever, attaching whenever the game appears.
+
+        Safe to start before the game, leave running across launches and quits,
+        and auto-start at login. A layout-check failure is fatal — that means
+        our struct declarations no longer match what ACR publishes, and logging
+        on would silently corrupt a dataset that cannot be re-collected.
+        """
+        self._say(f"logging at {self.hz} Hz -> {self.out_dir.resolve()}")
+        announced_wait = False
+        while True:
+            conn = GameConnection()
+            try:
+                conn.open()
+            except SegmentUnavailable:
+                if not announced_wait:
+                    self._say("waiting for Assetto Corsa Rally to start… (Ctrl+C to stop)")
+                    announced_wait = True
+                time.sleep(2.0)
+                continue
+
+            announced_wait = False
+            try:
+                self._session(conn)
+            finally:
+                conn.close()
+            self._say("game closed — waiting for it to come back\n")
+
+    # ---- inner loop: one attached session ---------------------------------
+    def _session(self, conn: GameConnection) -> None:
         period = 1.0 / self.hz
-        with GameConnection() as conn:
-            static = conn.static.read()
-            gfx = conn.graphics.read()
-            problems = sanity_check(static, gfx)
-            if problems:
-                self._say("WARNING — values look implausible:")
-                for p in problems:
-                    self._say(f"    {p}")
+        static = conn.static.read()
+        gfx = conn.graphics.read()
 
-            self._say(f"connected  ·  {static.carModel or '(no car)'}")
-            self._say(f"stage      ·  {static.track or '(none loaded)'}")
-            self._say(f"length     ·  {static.trackSplineLength:,.0f} m")
-            self._say(f"logging at ·  {self.hz} Hz -> {self.out_dir}")
-            self._say("waiting for the car to move… (Ctrl+C to stop)\n")
+        for problem in sanity_check(static, gfx):
+            self._say(f"WARNING — {problem}")
 
-            recording = False
-            stats = RunStats()
-            last_packet = None
-            idle_since = None
-            t0 = 0.0
-            last_time_str = ""
+        self._say(f"connected  ·  {static.carModel or '(no car)'}")
+        self._say(f"stage      ·  {static.track or '(none loaded)'}")
+        self._say("waiting for the car to move…\n")
 
+        recording = False
+        stats = RunStats()
+        last_packet = None
+        idle_since = None
+        t0 = 0.0
+        last_time_str = ""
+
+        heartbeat_packet = gfx.packetId
+        heartbeat_at = time.perf_counter()
+
+        try:
             while True:
                 loop_start = time.perf_counter()
                 phys = conn.physics.read()
                 gfx = conn.graphics.read()
                 live = phys.is_live
 
+                # Detect the game going away.
+                if gfx.packetId != heartbeat_packet:
+                    heartbeat_packet = gfx.packetId
+                    heartbeat_at = loop_start
+                elif loop_start - heartbeat_at >= self.disconnect_after_s:
+                    return
+
                 if gfx.currentTime:
                     last_time_str = gfx.currentTime
 
                 if not recording and live:
                     static = conn.static.read()
-                    spline = static.trackSplineLength
                     path = self._open_run(static, gfx)
                     recording = True
                     stats = RunStats(
@@ -304,20 +345,32 @@ class Recorder:
                     if idle_since is None:
                         idle_since = now
                     elif now - idle_since >= self.idle_stop_s:
-                        stats.duration_s = idle_since - t0
-                        stats.stage_time = last_time_str
-                        covered = stats.end_dist - stats.start_dist
-                        self._close_run(static, gfx, stats)
-                        self._say(
-                            f"■ saved      {stats.samples:,} samples · "
-                            f"{covered:,.0f} m · stage time {stats.stage_time or '—'}\n"
-                        )
+                        self._finish(static, gfx, stats, idle_since - t0, last_time_str)
                         recording = False
                         idle_since = None
 
                 elapsed = time.perf_counter() - loop_start
                 if elapsed < period:
                     time.sleep(period - elapsed)
+        finally:
+            # Never lose a run in progress to a quit, a crash or Ctrl+C.
+            if recording:
+                self._finish(
+                    static, gfx, stats,
+                    time.perf_counter() - t0, last_time_str,
+                    note=" (interrupted)",
+                )
+
+    def _finish(self, static, gfx, stats: RunStats, duration: float,
+                time_str: str, note: str = "") -> None:
+        stats.duration_s = duration
+        stats.stage_time = time_str
+        covered = stats.end_dist - stats.start_dist
+        self._close_run(static, gfx, stats)
+        self._say(
+            f"■ saved      {stats.samples:,} samples · {covered:,.0f} m · "
+            f"stage time {stats.stage_time or '—'}{note}\n"
+        )
 
     def _say(self, msg: str) -> None:
         if self.verbose:
