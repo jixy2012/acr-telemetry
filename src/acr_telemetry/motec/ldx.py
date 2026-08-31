@@ -51,16 +51,25 @@ def write_ldx(path: Path, lap_times: list[float]) -> Path:
     group.setAttribute("Index", str(len(lap_times) - 1))
     block.appendChild(group)
 
+    def marker(index: int, elapsed_us: float) -> None:
+        node = doc.createElement("Marker")
+        node.setAttribute("Version", "100")
+        node.setAttribute("ClassName", "BCN")
+        node.setAttribute("Name", f"Manual.{index}")
+        node.setAttribute("Flags", "77")
+        node.setAttribute("Time", f"{elapsed_us:0.2f}")
+        group.appendChild(node)
+
+    # A beacon at zero, so the first run is Lap 1 rather than an "Out Lap".
+    # i2 treats everything before the first beacon as the out lap, which on a
+    # circuit is real -- the trip from the pits -- but here would silently
+    # relabel every lap and leave run 1 outside the numbering.
+    marker(0, 0.0)
+
     elapsed_us = 0.0
     for i, duration in enumerate(lap_times, start=1):
         elapsed_us += duration * 1_000_000
-        marker = doc.createElement("Marker")
-        marker.setAttribute("Version", "100")
-        marker.setAttribute("ClassName", "BCN")
-        marker.setAttribute("Name", f"Manual.{i}")
-        marker.setAttribute("Flags", "77")
-        marker.setAttribute("Time", f"{elapsed_us:0.2f}")
-        group.appendChild(marker)
+        marker(i, elapsed_us)
 
     details = doc.createElement("Details")
     layers.appendChild(details)

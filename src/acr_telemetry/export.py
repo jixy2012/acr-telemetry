@@ -93,6 +93,34 @@ class Run:
         return sum(1 for g in gas if g > 0.95) / len(gas)
 
     @property
+    def teleports(self) -> int:
+        """Position jumps the car could not physically have made.
+
+        A stage reset puts the car back on the road somewhere it never drove
+        to. The recorder captures that faithfully -- it is what happened -- but
+        the run is no longer one continuous drive, so its time is not
+        comparable and its path draws a straight line across the track map.
+
+        Judged against the speed at the time rather than a fixed distance, so
+        it scales from a hairpin to a flat-out straight.
+        """
+        import math
+
+        xs, zs = self.samples["car_x"], self.samples["car_z"]
+        speeds = self.samples["speed_kmh"]
+        step = 1.0 / self.hz
+        count = 0
+        for i in range(len(xs) - 1):
+            jump = math.hypot(xs[i + 1] - xs[i], zs[i + 1] - zs[i])
+            if jump < 5.0:
+                continue
+            # 1.5x headroom for acceleration within the interval, plus a metre
+            # of slack for coordinate noise while stationary.
+            if jump > (speeds[i] / 3.6) * step * 1.5 + 1.0:
+                count += 1
+        return count
+
+    @property
     def duration_s(self) -> float:
         """Elapsed time from first sample to last."""
         return (self.sample_count - 1) / self.hz
@@ -247,6 +275,42 @@ _SOURCE_KEYS = {
     "clutch": True, "steer": True, "gear": False, "rpm": True, "acc_x": True,
     "acc_y": True, "acc_z": True, "car_x": True, "car_y": True, "car_z": True,
 }
+
+# Per-wheel suspension and tyre channels, all measured directly by the physics
+# engine. Generated rather than written out thirty-six times.
+#
+# Short names must fit seven characters once the corner is appended, which is
+# why they are abbreviated harder than the display names.
+_CORNERS = ("fl", "fr", "rl", "rr")
+
+_PER_WHEEL: list[tuple[str, str, str, str, int, object]] = [
+    # csv prefix,   MoTeC name,   short,   unit,    dp, conversion
+    ("susp_travel", "Susp Pos",   "Susp",  "mm",     2, lambda v: v * 1000.0),
+    ("wheel_load",  "Wheel Load", "WhlLd", "N",      1, lambda v: v),
+    ("slip_angle",  "Slip Angle", "SlipA", "deg",    3, math.degrees),
+    ("slip_ratio",  "Slip Ratio", "SlipR", "",       4, lambda v: v),
+    ("wheel_omega", "Tyre Speed", "TSpd",  "rad/s",  3, lambda v: v),
+    # Kelvin at source. ACR reports Kelvin where AC1 reported Celsius.
+    ("brake_temp",  "Brake Temp", "BTemp", "C",      2, lambda v: v - 273.15),
+    ("fx",          "Tyre Fx",    "Fx",    "N",      1, lambda v: v),
+    ("fy",          "Tyre Fy",    "Fy",    "N",      1, lambda v: v),
+    ("mz",          "Tyre Mz",    "Mz",    "Nm",     2, lambda v: v),
+]
+
+for _prefix, _name, _short, _unit, _dp, _convert in _PER_WHEEL:
+    for _corner in _CORNERS:
+        _column = f"{_prefix}_{_corner}"
+        _MANIFEST.append(
+            (
+                f"{_name} {_corner.upper()}",
+                f"{_short}{_corner.upper()}",
+                _unit,
+                _dp,
+                _column,
+                lambda c, i, _k=_column, _f=_convert: _f(c[_k][i]),
+            )
+        )
+        _SOURCE_KEYS[_column] = True
 
 
 def load_run(csv_path: Path, hz: int = DEFAULT_HZ) -> Run:
@@ -410,6 +474,8 @@ def classify(
         return "limp"
     if run.start_distance_m > reference_start_m + _START_TOLERANCE_M:
         return "partial"
+    if run.teleports:
+        return "reset"
     return "clean"
 
 
