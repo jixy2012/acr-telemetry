@@ -41,10 +41,21 @@ def cmd_export(args) -> int:
         wraps_distance,
     )
 
-    # Statuses worth exporting. "truncated" is included deliberately: on a
-    # circuit it is the best that can be made of the data, and the caveat
-    # travels inside the file rather than only in this output.
-    exportable = {"clean", "truncated"}
+    # Which statuses reach the file. The default is what you want for
+    # comparing pace; it is not what you want for studying a crash.
+    #
+    # Excluding an aborted run is right when the question is "how consistent am
+    # I", because a 20-second fragment averaged in tells you nothing. It is
+    # exactly wrong when the question is "where do I keep losing it" -- on this
+    # stage every incident on record sits between 769 and 871 m, and all of it
+    # lives in runs the default filter throws away.
+    if args.include == "all":
+        exportable = {
+            "clean", "truncated", "aborted", "limp", "partial",
+            "reset", "circuit-split",
+        }
+    else:
+        exportable = {s.strip() for s in args.include.split(",") if s.strip()}
 
     circuit_note = (
         "TRUNCATED LAPS. This venue's distance axis wraps, so the recorder -- "
@@ -105,8 +116,11 @@ def cmd_export(args) -> int:
             print(f"  circuit: distance wraps at {spline:,.0f} m — no run here is a whole lap")
 
         keep = []
+        kept_statuses: list[str] = []
         for path, run in loaded:
             status = classify(run, reference, reference_start, wraps)
+            if status in exportable:
+                kept_statuses.append(status)
             # Number the kept runs as i2 will: it shows laps in file order,
             # with no idea which recording each came from.
             marker = f"lap {len(keep) + 1:2d}" if status in exportable else " " * 6
@@ -146,8 +160,19 @@ def cmd_export(args) -> int:
         folded = unicodedata.normalize("NFKD", f"{stage}_{car}")
         slug = "".join(c for c in folded if not unicodedata.combining(c))
         slug = "".join(c for c in slug.replace(" ", "-") if c.isascii() and (c.isalnum() or c in "-_"))
+        notes = [circuit_note] if wraps else []
+        mixed = sorted(set(kept_statuses) - {"clean", "truncated"})
+        if mixed:
+            notes.append(
+                "MIXED CONTENT, on purpose. Laps here are not all complete "
+                "clean runs -- this log includes: " + ", ".join(mixed) + ". "
+                "Exported deliberately, because incidents only exist in the "
+                "runs the default filter drops. Do not read the lap times as "
+                "comparable: an aborted run is a fragment, and a reset run had "
+                "the car put back on the road mid-stage."
+            )
         ld_path, _ = export(
-            keep, out_dir / slug, args.hz, note=circuit_note if wraps else ""
+            keep, out_dir / slug, args.hz, note="\n\n".join(notes)
         )
         size_mb = ld_path.stat().st_size / 1e6
         print(f"  -> {ld_path}  ({size_mb:.1f} MB, {len(keep)} laps)")
@@ -211,6 +236,14 @@ def main() -> int:
         "--out",
         default=str(_default_export_dir()),
         help="output directory (defaults to MoTeC's Logged Data folder if present)",
+    )
+    p_export.add_argument(
+        "--include",
+        default="clean,truncated",
+        help="run statuses to export: a comma-separated list, or 'all'. "
+        "Default keeps whole clean runs, which is what you want for comparing "
+        "pace. Use 'all' — or e.g. 'clean,aborted,reset' — to study incidents, "
+        "since crashes only exist in the runs the default drops",
     )
     p_export.add_argument("--stage", help="only stages matching this substring")
     p_export.add_argument("--car", help="only cars matching this substring")
