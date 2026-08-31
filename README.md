@@ -37,8 +37,18 @@ runs/2026-08-15T18-42-11_Greece-Loutraki---Aghii-Theodori_Skoda-Fabia-RS-Rally2.
 runs/2026-08-15T18-42-11_Greece-Loutraki---Aghii-Theodori_Skoda-Fabia-RS-Rally2.json
 ```
 
-The CSV is one row per physics frame, ~70 channels wide. The JSON alongside it
-carries the car, stage, stage length, sample count and final stage time.
+The CSV is ~70 channels wide. The JSON alongside it carries the car, stage,
+stage length, sample count and final stage time.
+
+**Rows land at ~96 Hz, not 330.** The physics page ticks at ~330 Hz, but a row
+is only written when `packetId` changes between polls, and at the default 100 Hz
+poll rate that captures every third or fourth frame — `packetId` steps by 3 and
+4, and the measured rate across 13 runs is 95.5–96.2 Hz. Intervals jitter
+between 10.0 and 10.8 ms.
+
+That jitter matters to anything assuming an even sample spacing: declaring a
+fixed rate over the raw rows drifts a 224-second run by about nine seconds.
+`export` resamples onto a uniform grid first for exactly this reason.
 
 ## How it reads the game
 
@@ -97,11 +107,65 @@ Gotchas worth knowing:
 - **`packetId` ticks at 330 Hz even when the payload is all zeros**, so it is
   useless as a liveness test. `wheelsPressure[0] != 0` is the reliable one.
 
+## MoTeC export
+
+```bash
+uv run acr-telemetry export                        # every stage and car
+uv run acr-telemetry export --stage "New Loutraki"
+```
+
+Writes one `.ld` plus its `.ldx` per stage and car, into MoTeC's `Logged Data`
+folder if i2 is installed. Runs of the same stage are **concatenated so each
+becomes a lap**, which is what makes i2 work at all here: time variance,
+overlays, the fastest-lap reference and the lap report are all lap-based, and a
+stage is a single lap. One file per run gets you almost none of it.
+
+Runs that cannot be compared are excluded and listed, never dropped silently:
+
+| Status | Exported | Meaning |
+| --- | --- | --- |
+| `clean` | yes | a whole stage, start to finish |
+| `aborted` | no | covered under half the stage |
+| `limp` | no | almost no full throttle — a damaged car, not a slow driver |
+| `partial` | no | resumed mid-stage, so it starts hundreds of metres up the road. A fine drive and a useless lap: i2 measures distance from each beacon, so it would sit permanently out of phase with the others |
+| `truncated` | yes | a circuit lap missing the piece between the line and the wrap — see below |
+| `circuit-split` | no | that missing piece |
+
+### Circuits
+
+On a closed circuit `distanceTraveled` is not cumulative — it is spline position
+around the loop, and it wraps to zero every lap. The recorder is built for
+point-to-point stages and treats both a large backwards jump and a rewound
+stage clock as a new attempt, which is right for rally and wrong here: it splits
+every lap twice, once at the start/finish line and once at the wrap.
+
+So on a circuit **no recorded run is a whole lap**. The longer piece is exported
+as `truncated` because it is still honest data over the distance it covers, but
+its lap time is short by the length of the missing stretch. The export says so
+in the terminal, and — because that scrolls away and the file does not — writes
+the caveat into the log's event comment where i2 will show it.
+
+Livigno Circuit Main Reverse is the worked example: 921.9 m loop, line at
+804.3 m, so each exported lap is missing 113 m and reads about 7 s quick. The
+game's own lap timer confirms the split — the two pieces' durations sum to its
+reported lap time to within 20 ms on 15 of 16 laps.
+
+Joining the pieces back into whole laps is not implemented. Circuit stages are
+rare in a rally game, and the mislabelling was the actual problem.
+
+Only channels the physics engine measures directly are exported. Derived
+quantities belong in i2 math channels where they stay visibly derived, and the
+dead ACR channels are omitted entirely — a constant 32 kPa tyre pressure sitting
+in i2 would look like real data a year from now.
+
+In i2, generate the track map from **GPS**, not lateral G: the synthesised
+`GPS Latitude`/`GPS Longitude` come from the game's world coordinates, whereas
+dead reckoning drifts badly on a point-to-point stage that never closes a loop.
+
 ## Roadmap
 
-- [ ] MoTeC `.ld` export — the real interop format, readable by free i2
-      Standard. Port from [`sim-to-motec`](https://github.com/GeekyDeaks/sim-to-motec)
-      or [`gotzl/ldparser`](https://github.com/gotzl/ldparser).
+- [x] MoTeC `.ld` export — ported from [`sim-to-motec`](https://github.com/GeekyDeaks/sim-to-motec),
+      round-trip verified against [`gotzl/ldparser`](https://github.com/gotzl/ldparser).
 - [ ] Delta-over-distance between two runs on the same stage.
 - [ ] Derived channels: coast time while yaw is stable, steering corrections
       with stage geometry removed, understeer/oversteer balance.
