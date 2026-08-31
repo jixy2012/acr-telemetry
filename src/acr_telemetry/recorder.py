@@ -26,6 +26,12 @@ WHEELS = ("fl", "fr", "rl", "rr")
 SCALAR_CHANNELS = [
     "t_s",
     "packet_id",
+    # The game's own stage clock, in seconds. It stops at the flying finish
+    # while the car rolls on to the stop control, so it is the only signal that
+    # says where the timed stage actually ends. Without it a "lap time" carries
+    # 13-22 s of however hard you happened to brake afterwards -- several times
+    # larger than the differences worth reading.
+    "stage_clock_s",
     "dist_m",
     "stage_pct",
     "speed_kmh",
@@ -195,9 +201,12 @@ class Recorder:
         body_slip = math.degrees(math.atan2(lv[0], abs(lv[2]))) if abs(lv[2]) > 0.5 else 0.0
         car = gfx.carCoordinates[0]
 
+        stage_clock = parse_stage_time(gfx.currentTime)
+
         row = [
             round(t, 4),
             phys.packetId,
+            round(stage_clock, 3) if stage_clock is not None else "",
             round(gfx.distanceTraveled, 3),
             round(gfx.distanceTraveled / spline_len, 6) if spline_len > 0 else "",
             round(phys.speedKmh, 3),
