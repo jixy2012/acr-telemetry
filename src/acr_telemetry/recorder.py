@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from .layout import Graphics, Physics, Static
+from .raw import RawWriter
 from .shm import GameConnection, SegmentUnavailable, sanity_check
 
 # Per-sample columns. Order defines the CSV header; `extract` below must match.
@@ -200,8 +202,15 @@ class Recorder:
     disconnect_after_s: float = 8.0
 
     _writer: csv.writer | None = field(default=None, init=False, repr=False)
+    # Raw capture runs alongside the CSV rather than replacing it: the CSV is
+    # what every downstream script and the MoTeC export already read. The raw
+    # file is the archive -- it is the one that can answer a question nobody
+    # has thought of yet.
+    raw: bool = True
+
     _fh: object | None = field(default=None, init=False, repr=False)
     _path: Path | None = field(default=None, init=False, repr=False)
+    _raw: RawWriter | None = field(default=None, init=False, repr=False)
 
     # ---- sample extraction ------------------------------------------------
     @staticmethod
@@ -290,6 +299,8 @@ class Recorder:
         """Re-open the current run's CSV to append after a pause."""
         self._fh = self._path.open("a", newline="", encoding="utf-8")
         self._writer = csv.writer(self._fh)
+        if self._raw is not None:
+            self._raw.reopen()
 
     def _suspend_file(self, static, stats: RunStats, duration: float,
                       time_str: str) -> None:
@@ -303,6 +314,8 @@ class Recorder:
             self._fh.close()
             self._fh = None
             self._writer = None
+        if self._raw is not None:
+            self._raw.suspend()
         stats.duration_s = duration
         stats.stage_time = time_str
         self._write_meta(static, stats)
@@ -315,6 +328,16 @@ class Recorder:
         self._fh = self._path.open("w", newline="", encoding="utf-8")
         self._writer = csv.writer(self._fh)
         self._writer.writerow(HEADER)
+        if self.raw:
+            self._raw = RawWriter(
+                self._path.with_suffix(".raw"), Physics, Graphics, Static
+            )
+            self._raw.open(
+                bytes(static),
+                self.hz,
+                started_at=datetime.now().isoformat(timespec="seconds"),
+                csv=self._path.name,
+            )
         return self._path
 
     def _close_run(self, static, gfx, stats: RunStats) -> None:
@@ -322,6 +345,12 @@ class Recorder:
             self._fh.close()
             self._fh = None
             self._writer = None
+        if self._raw is not None:
+            self._raw.close(
+                duration_s=round(stats.duration_s, 2),
+                stage_time=stats.stage_time,
+            )
+            self._raw = None
         self._write_meta(static, stats)
         self._path = None
 
@@ -346,7 +375,8 @@ class Recorder:
             # place the stage time exists.
             "stage_time": stats.stage_time,
             "csv": self._path.name,
-            "schema_version": 2,
+            "raw": self._path.with_suffix(".raw").name if self.raw else None,
+            "schema_version": 3,
         }
         self._path.with_suffix(".json").write_text(
             json.dumps(meta, indent=2), encoding="utf-8"
@@ -414,7 +444,10 @@ class Recorder:
         suspend_dist = 0.0
         suspend_stage = ""
         suspend_time: float | None = None   # stage clock, to catch a restart
-        pending: list[list] = []   # samples held while deciding resume vs. new run
+        # Samples held while deciding resume vs. new run. Each entry is the CSV
+        # row plus the verbatim pages it came from, so the two files can never
+        # disagree about what was captured.
+        pending: list[tuple[list, bytes, bytes]] = []
         pending_since = 0.0
 
         stats = RunStats()
@@ -463,8 +496,12 @@ class Recorder:
                     if phys.packetId != last_packet:
                         last_packet = phys.packetId
                         pending.append(
-                            self.extract(
-                                phys, gfx, static.trackSplineLength, drive_clock
+                            (
+                                self.extract(
+                                    phys, gfx, static.trackSplineLength, drive_clock
+                                ),
+                                bytes(phys),
+                                bytes(gfx),
                             )
                         )
 
@@ -508,14 +545,16 @@ class Recorder:
                             # every run would inherit the first one's time.
                             last_time_str = ""
                             # Restart this run's clock at the first held sample.
-                            offset = pending[0][0] if pending else 0.0
-                            for row in pending:
+                            offset = pending[0][0][0] if pending else 0.0
+                            for row, _, _ in pending:
                                 row[0] = round(row[0] - offset, 4)
                             drive_clock -= offset
                             self._say(f"▶ recording  {path.name}")
 
-                        for row in pending:
+                        for row, phys_bytes, gfx_bytes in pending:
                             self._writer.writerow(row)
+                            if self._raw is not None:
+                                self._raw.write(row[0], phys_bytes, gfx_bytes)
                             stats.samples += 1
                         if pending and stats.start_dist is None:
                             stats.start_dist = dist_now
@@ -562,6 +601,8 @@ class Recorder:
                                 phys, gfx, static.trackSplineLength, drive_clock
                             )
                         )
+                        if self._raw is not None:
+                            self._raw.write(drive_clock, bytes(phys), bytes(gfx))
                         stats.samples += 1
                         if stats.start_dist is None:
                             stats.start_dist = gfx.distanceTraveled

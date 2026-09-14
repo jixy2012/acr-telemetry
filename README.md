@@ -35,10 +35,12 @@ Output lands in `runs/`:
 ```
 runs/2026-08-15T18-42-11_Greece-Loutraki---Aghii-Theodori_Skoda-Fabia-RS-Rally2.csv
 runs/2026-08-15T18-42-11_Greece-Loutraki---Aghii-Theodori_Skoda-Fabia-RS-Rally2.json
+runs/2026-08-15T18-42-11_Greece-Loutraki---Aghii-Theodori_Skoda-Fabia-RS-Rally2.raw
 ```
 
-The CSV is 123 columns wide. The JSON alongside it carries the car, stage,
-stage length, sample count and final stage time.
+The CSV is 123 columns wide and is what everything downstream reads. The JSON
+alongside it carries the car, stage, stage length, sample count and final stage
+time. The `.raw` is the verbatim archive — see [The raw layer](#the-raw-layer).
 
 **Rows land at ~96 Hz, not 330.** The physics page ticks at ~330 Hz, but a row
 is only written when `packetId` changes between polls, and at the default 100 Hz
@@ -85,6 +87,54 @@ different on each and can never be compared. `dist_m` is the stable key, and
 the live game, then plausibility-checks the values. If Kunos reorders the
 struct, this refuses to run rather than silently banking garbage into a dataset
 you cannot re-collect.
+
+**Never let an interpretation become irreversible.** Deciding at capture time
+that a field is worthless is a judgement applied to data you cannot re-collect.
+The raw layer below exists because that judgement kept turning out to be
+provisional — a channel dead in August was live in September, and every run
+recorded in between was silently missing it.
+
+## The raw layer
+
+Every run is written twice. The CSV is the working copy — 123 named columns
+someone chose, and what the MoTeC export and all the scripts read. The `.raw`
+file beside it is the archive: the shared-memory pages exactly as the game
+published them, all 200 physics values, nothing selected and nothing rounded.
+
+```bash
+uv run acr-telemetry raw runs/2026-09-13T16-59-42_Alsace-Descente_VW-Polo-GTI-R5.raw
+uv run acr-telemetry raw <file> --field physics.tyreCoreTemperature
+```
+
+It costs roughly 2x the disk of the CSV and buys two things that cannot be
+bought later:
+
+- **A patch is answerable retroactively.** When Kunos wires up a field, you do
+  not need to have predicted it. The runs you already have contain it.
+- **Layout drift stops being fatal.** `layout.py` is a *hypothesis* about where
+  ACR puts things. A CSV bakes it in permanently; raw bytes do not care, and a
+  corrected struct re-reads the whole archive. The layout in force at capture
+  is stored in each file's header, so a file states how it was interpreted
+  rather than assuming you still agree.
+
+Format: a 64 kB JSON header — struct manifests for all three pages with every
+field's offset, width and format code, a SHA-256 fingerprint of that layout,
+and the static page stored whole — then fixed-size records of
+`float64 t_s + Physics + Graphics`, back to back, to EOF.
+
+Fixed-size records and a constant data offset are what make it robust. A file
+cut short by a crash loses at most the final partial record and reads back
+fine — the sample count comes from the size on disk, never from the header.
+`numpy` memory-maps it without parsing. And the header can be rewritten at
+close without moving a sample.
+
+The writer is stdlib-only and deliberately hard to make throw; `numpy` is
+imported lazily and only on the read side. Nothing in the capture path should
+be able to fail on a dependency. Use `--no-raw` to skip it.
+
+Decoding matches on each field's **format code and width**, never on the
+ctypes type name: `c_int32` calls itself `c_long` on Windows, and a reader
+matching names silently turns every integer in the file into a float.
 
 ## Known dead channels
 
@@ -199,6 +249,15 @@ dead reckoning drifts badly on a point-to-point stage that never closes a loop.
 
 - [x] MoTeC `.ld` export — ported from [`sim-to-motec`](https://github.com/GeekyDeaks/sim-to-motec),
       round-trip verified against [`gotzl/ldparser`](https://github.com/gotzl/ldparser).
+- [x] Raw capture layer — verbatim shared-memory pages alongside the CSV.
+- [ ] Channel ledger: scan the raw archive and report, per field, whether it
+      ever varies and across how many cars, stages and game versions. Replaces
+      the hand-maintained dead-channel list above with something re-derivable,
+      and makes patch day a one-command diff. A field that never moves is
+      reported as *not observed to vary*, never as "disabled" — `turbo` reads
+      zero on a naturally aspirated car and `numberOfTyresOut` reads zero if
+      you stay on the road, and neither is evidence about the game.
+- [ ] Export reads the ledger, so flat channels are marked rather than dropped.
 - [ ] Delta-over-distance between two runs on the same stage.
 - [ ] Derived channels: coast time while yaw is stable, steering corrections
       with stage geometry removed, understeer/oversteer balance.

@@ -19,7 +19,7 @@ def _default_export_dir() -> Path:
 
 
 def cmd_log(args) -> int:
-    rec = Recorder(out_dir=Path(args.out), hz=args.hz)
+    rec = Recorder(out_dir=Path(args.out), hz=args.hz, raw=args.raw)
     try:
         rec.run()
     except SegmentUnavailable as exc:
@@ -180,6 +180,49 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_raw(args) -> int:
+    """Inspect a raw capture: header, layout fingerprint, and channel stats.
+
+    Reads straight from the archive rather than the CSV, which is the point —
+    it can show any of the 200 physics values, including the ones no CSV column
+    was ever created for.
+    """
+    from .raw import RawReader
+
+    reader = RawReader(args.file)
+    header = reader.header
+    print(f"file            {Path(args.file).name}")
+    print(f"format version  {header['format_version']}")
+    print(f"written         {header.get('created_at', '—')}")
+    print(f"samples         {reader.samples:,}  ({reader.record_size} bytes each)")
+    print(f"layout sha256   {header['layout']['sha256'][:32]}")
+    if not header.get("closed", True):
+        print("NOTE: header says this run was never closed — logger stopped mid-run")
+    if reader.truncated:
+        print(
+            f"NOTE: file holds {reader.samples:,} whole records but the header "
+            f"claims {header.get('samples'):,} — truncated, reading what survived"
+        )
+    if reader.samples == 0:
+        return 0
+
+    # Decode the stored static page with today's declaration. It is stored
+    # whole, so a later correction to Static re-reads this without re-driving.
+    from .layout import Static
+
+    static = reader.static(Static)
+    print(f"car             {static.carModel or '—'}")
+    print(f"stage           {static.track or '—'}")
+
+    if args.field:
+        page, _, name = args.field.rpartition(".")
+        values = reader.field(page or "physics", name)
+        print()
+        print(f"{args.field}  shape {values.shape}")
+        print(values[:: max(1, len(values) // 10)])
+    return 0
+
+
 def cmd_status(args) -> int:
     """One-shot read of what the game is publishing right now."""
     try:
@@ -240,7 +283,25 @@ def main() -> int:
     p_log = sub.add_parser("log", help="record runs until interrupted")
     p_log.add_argument("--hz", type=int, default=100, help="sample rate (default 100)")
     p_log.add_argument("--out", default="runs", help="output directory")
+    p_log.add_argument(
+        "--no-raw",
+        dest="raw",
+        action="store_false",
+        help="skip the verbatim .raw capture and write only the CSV. Saves "
+        "roughly 2x the disk, at the cost of the archive: the CSV holds the "
+        "119 columns someone chose, the raw file holds everything the game "
+        "published",
+    )
     p_log.set_defaults(func=cmd_log)
+
+    p_raw = sub.add_parser("raw", help="inspect a raw capture file")
+    p_raw.add_argument("file", help="path to a .raw capture")
+    p_raw.add_argument(
+        "--field",
+        help="dump one channel, e.g. 'physics.tyreCoreTemperature' or "
+        "'graphics.distanceTraveled' (page defaults to physics)",
+    )
+    p_raw.set_defaults(func=cmd_raw)
 
     p_status = sub.add_parser("status", help="show what the game is publishing")
     p_status.set_defaults(func=cmd_status)
