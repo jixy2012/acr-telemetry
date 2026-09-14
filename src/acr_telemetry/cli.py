@@ -180,6 +180,57 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_channels(args) -> int:
+    """Print both gates: struct -> CSV, and CSV -> MoTeC.
+
+    The question this answers is the one neither module can answer alone:
+    given a field ACR publishes, where does it end up, and if it stops
+    somewhere, why. Run it after a patch that you think changed something.
+    """
+    from .export import NOT_EXPORTED, _MANIFEST, check_export_coverage
+    from .inventory import NOT_RECORDED, RECORDED, check_coverage
+    from .layout import Physics
+
+    exported = {entry[4] for entry in _MANIFEST}
+    fields = [name for name, _ in Physics._fields_]
+
+    if args.gate in ("capture", "both"):
+        print(f"PHYSICS -> CSV     {len(RECORDED)} of {len(fields)} fields recorded")
+        print()
+        for name in fields:
+            if name in RECORDED:
+                print(f"  {name:<24} -> {RECORDED[name]}")
+        print()
+        by_status: dict[str, list] = {}
+        for name, (status, note) in NOT_RECORDED.items():
+            by_status.setdefault(status, []).append((name, note))
+        for status in sorted(by_status):
+            print(f"  not recorded — {status}")
+            for name, note in sorted(by_status[status]):
+                print(f"    {name:<22} {note}")
+            print()
+
+    if args.gate in ("export", "both"):
+        from .recorder import HEADER
+
+        print(f"CSV -> MoTeC       {len(exported)} of {len(HEADER)} columns exported")
+        print()
+        for entry in _MANIFEST:
+            print(f"  {entry[4]:<24} -> {entry[0]} [{entry[2] or '-'}]")
+        print()
+        print("  not exported")
+        for column, why in sorted(NOT_EXPORTED.items()):
+            print(f"    {column:<22} {why}")
+        print()
+
+    problems = check_coverage() + check_export_coverage()
+    for problem in problems:
+        print(f"WARNING: {problem}")
+    if not problems:
+        print("every field and column is accounted for.")
+    return 1 if problems else 0
+
+
 def cmd_raw(args) -> int:
     """Inspect a raw capture: header, layout fingerprint, and channel stats.
 
@@ -293,6 +344,18 @@ def main() -> int:
         "published",
     )
     p_log.set_defaults(func=cmd_log)
+
+    p_channels = sub.add_parser(
+        "channels",
+        help="what is captured, what is exported, and why the rest is not",
+    )
+    p_channels.add_argument(
+        "--gate",
+        choices=("capture", "export", "both"),
+        default="both",
+        help="capture = physics struct to CSV, export = CSV to MoTeC",
+    )
+    p_channels.set_defaults(func=cmd_channels)
 
     p_raw = sub.add_parser("raw", help="inspect a raw capture file")
     p_raw.add_argument("file", help="path to a .raw capture")

@@ -136,6 +136,28 @@ Decoding matches on each field's **format code and width**, never on the
 ctypes type name: `c_int32` calls itself `c_long` on Windows, and a reader
 matching names silently turns every integer in the file into a float.
 
+## What is captured, and what is not
+
+Two independent gates: the physics struct to the CSV, and the CSV to MoTeC.
+Both are inventoried in code rather than in prose, because a list in a document
+goes stale silently — a coverage check fails if any field or column is
+unaccounted for, so adding one to `layout.py` forces a decision instead of a
+silence.
+
+```bash
+uv run acr-telemetry channels                  # both gates, with reasons
+uv run acr-telemetry channels --gate capture   # physics struct -> CSV
+```
+
+37 of the 85 physics fields reach the CSV; 49 of the 123 CSV columns reach
+MoTeC. Every one of the rest carries a reason, and the reasons are provenance
+rather than verdicts — `measured-flat` means somebody looked on a date and it
+did not move, `unassessed` means nobody has ever checked. Most are unassessed,
+which is worth knowing: it is a to-do list, not a set of conclusions.
+
+When you think a patch has changed something, follow
+[docs/adding-a-channel.md](docs/adding-a-channel.md).
+
 ## Known dead channels
 
 As of ACR early access (August 2026) these read zero:

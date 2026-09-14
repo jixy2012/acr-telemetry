@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from .inventory import check_coverage
 from .layout import Graphics, Physics, Static
 from .raw import RawWriter
 from .shm import GameConnection, SegmentUnavailable, sanity_check
@@ -432,6 +433,12 @@ class Recorder:
         gfx = conn.graphics.read()
 
         for problem in sanity_check(static, gfx):
+            self._say(f"WARNING — {problem}")
+        # Advisory, unlike the fatal offset check: an unclassified field means
+        # the inventory is stale, not that the capture is wrong, and the raw
+        # layer keeps the bytes either way. It fires when layout.py gains a
+        # field, which is exactly when someone should decide what to do with it.
+        for problem in check_coverage():
             self._say(f"WARNING — {problem}")
 
         self._say(f"connected  ·  {static.carModel or '(no car)'}")

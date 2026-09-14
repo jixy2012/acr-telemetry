@@ -30,6 +30,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -311,6 +312,75 @@ for _prefix, _name, _short, _unit, _dp, _convert in _PER_WHEEL:
             )
         )
         _SOURCE_KEYS[_column] = True
+
+
+# The second gate. Capture decides what reaches the CSV (see inventory.py);
+# this decides what reaches MoTeC, and the two answers are deliberately
+# different -- i2 is a cockpit for driving analysis, not an archive, and a
+# channel list nobody can hold in their head is worse than a short one.
+#
+# Same rule as the inventory: every CSV column is named exactly once, here or
+# in the manifest above, so a new column forces a decision about i2 rather than
+# quietly never appearing. Per-wheel columns are named by their prefix.
+NOT_EXPORTED: dict[str, str] = {
+    "t_s": "i2 places sample n at n/freq; the time axis is implicit",
+    "packet_id": "capture bookkeeping, not vehicle state",
+    "stage_clock_s": "the game's own clock; i2 derives lap time itself",
+    "dist_m": "becomes i2's distance axis via the lap structure",
+    "stage_pct": "derived from dist_m; belongs in a math channel",
+    "heading": "radians, and i2 draws the map from the GPS channels instead",
+    "pitch": "radians; add as a math channel if it is ever wanted",
+    "roll": "radians; add as a math channel if it is ever wanted",
+    "yaw_rate": "available, but the G traces cover cornering in practice",
+    "pitch_rate": "rarely read on a rally stage",
+    "roll_rate": "rarely read on a rally stage",
+    "vel_x": "world-frame; Ground Speed is the useful scalar",
+    "vel_y": "world-frame; Ground Speed is the useful scalar",
+    "vel_z": "world-frame; Ground Speed is the useful scalar",
+    "lvel_x": "body-frame velocity, folded into body_slip_deg",
+    "lvel_y": "body-frame velocity, folded into body_slip_deg",
+    "lvel_z": "body-frame velocity, folded into body_slip_deg",
+    "body_slip_deg": "derived, not measured -- belongs in a math channel "
+    "where it stays visibly derived",
+    "water_temp_k": "engine temperature does not drive stage pace",
+    "abs_active": "worth exporting; nobody has needed it yet",
+    "tc_active": "worth exporting; nobody has needed it yet",
+    "engine_running": "constant across a stage",
+    "wheel_slip": "AC1's combined slip; slip_ratio and slip_angle are clearer",
+    "contact": "road geometry, not car dynamics -- surveying output",
+    "contact_normal": "road geometry, not car dynamics -- surveying output",
+    # Captured since Sept 2026 and live, but not yet given an i2 path. The
+    # dead ones stay out for the original reason: a flat line in i2 looks
+    # exactly like real data.
+    "tyre_core_temp": "live since the Sept 2026 patch -- wants an i2 channel",
+    "tyre_temp": "duplicate of tyre_core_temp",
+    "tyre_temp_i": "flat zero as of Sept 2026; a flat trace in i2 reads as data",
+    "tyre_temp_m": "flat zero as of Sept 2026; a flat trace in i2 reads as data",
+    "tyre_temp_o": "flat zero as of Sept 2026; a flat trace in i2 reads as data",
+    "tyre_pressure": "constant 32 as of Sept 2026; same reason",
+}
+
+_WHEEL_SUFFIX = re.compile(r"_(fl|fr|rl|rr)(_[xyz])?$")
+
+
+def check_export_coverage() -> list[str]:
+    """Return CSV columns that are neither exported nor explained; empty is
+    good. Advisory, like the capture-side check -- an unlisted column means
+    this table is stale, not that an export is wrong."""
+    from .recorder import HEADER
+
+    exported = {entry[4] for entry in _MANIFEST}
+    problems = []
+    for column in HEADER:
+        if column in exported:
+            continue
+        if _WHEEL_SUFFIX.sub("", column) in NOT_EXPORTED or column in NOT_EXPORTED:
+            continue
+        problems.append(
+            f"CSV column {column!r} is neither exported nor listed in "
+            f"NOT_EXPORTED (export.py)"
+        )
+    return problems
 
 
 def load_run(csv_path: Path, hz: int = DEFAULT_HZ) -> Run:
