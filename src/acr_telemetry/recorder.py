@@ -77,6 +77,19 @@ PER_WHEEL_CHANNELS = [
     "fx",
     "fy",
     "mz",
+    # All four tyre-temperature fields AC1 defines, because which one ACR
+    # drives is a question about the game, not about this recorder: the core
+    # temperature, the single-value tyreTemp added later in AC1's struct, and
+    # the inner/middle/outer surface triple. Kelvin at source.
+    "tyre_core_temp",
+    "tyre_temp",
+    "tyre_temp_i",
+    "tyre_temp_m",
+    "tyre_temp_o",
+    # Read a constant 32 before the September 2026 patch. Logged now for the
+    # same reason as the temps: the patch that woke those up may have woken
+    # this, and a flat column is a cheap way to find out.
+    "tyre_pressure",
 ]
 
 # Road geometry, not car dynamics. Four world-space points on the road surface
@@ -252,6 +265,12 @@ class Recorder:
                 "fx": phys.fx,
                 "fy": phys.fy,
                 "mz": phys.mz,
+                "tyre_core_temp": phys.tyreCoreTemperature,
+                "tyre_temp": phys.tyreTemp,
+                "tyre_temp_i": phys.tyreTempI,
+                "tyre_temp_m": phys.tyreTempM,
+                "tyre_temp_o": phys.tyreTempO,
+                "tyre_pressure": phys.wheelsPressure,
             }[name]
             row.extend(round(src[i], 4) for i in range(4))
 

@@ -207,6 +207,21 @@ def cmd_status(args) -> int:
             f"  speed {phys.speedKmh:6.1f} km/h   gas {phys.gas:.2f}   "
             f"brake {phys.brake:.2f}   gear {phys.gear}   rpm {phys.rpms}"
         )
+        # Raw Kelvin, not Celsius: the useful readings here are the two that
+        # mean "not simulated" — 0.00 for a field the game never writes, and a
+        # flat 363.15 for the placeholder AC1 compatibility value.
+        print("  tyre temps (K)          FL        FR        RL        RR")
+        for label, values in (
+            ("core", phys.tyreCoreTemperature),
+            ("tyreTemp", phys.tyreTemp),
+            ("inner", phys.tyreTempI),
+            ("middle", phys.tyreTempM),
+            ("outer", phys.tyreTempO),
+        ):
+            cells = "  ".join(f"{values[i]:8.2f}" for i in range(4))
+            print(f"    {label:<10s}{cells}")
+        cells = "  ".join(f"{phys.wheelsPressure[i]:8.2f}" for i in range(4))
+        print(f"  pressure    {cells}")
     else:
         print("  (payload is zeroed — the car is not moving)")
 

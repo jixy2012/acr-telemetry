@@ -37,7 +37,7 @@ runs/2026-08-15T18-42-11_Greece-Loutraki---Aghii-Theodori_Skoda-Fabia-RS-Rally2.
 runs/2026-08-15T18-42-11_Greece-Loutraki---Aghii-Theodori_Skoda-Fabia-RS-Rally2.json
 ```
 
-The CSV is ~70 channels wide. The JSON alongside it carries the car, stage,
+The CSV is 123 columns wide. The JSON alongside it carries the car, stage,
 stage length, sample count and final stage time.
 
 **Rows land at ~96 Hz, not 330.** The physics page ticks at ~330 Hz, but a row
@@ -88,15 +88,48 @@ you cannot re-collect.
 
 ## Known dead channels
 
-As of ACR early access (August 2026) these read zero and are logged anyway, so
-they light up automatically if Kunos wires them to UE equivalents:
+As of ACR early access (August 2026) these read zero:
 
 `numberOfTyresOut` · `carDamage` · `suspensionDamage` · `brakePressure` ·
 `tyreWear` · `tyreDirtyLevel` · `camberRad` · `rideHeight` · `turbo` ·
 `airDensity` · `tyreTempI/M/O`
 
-Placeholders rather than simulation: `wheelsPressure` is a constant 32, tyre
-temperatures sit at 363.15 K (exactly 90 °C).
+Placeholder rather than simulation: `wheelsPressure` is a constant 32.
+
+**Tyre temperatures came alive in the September 2026 patch.**
+`tyreCoreTemperature` is simulated per wheel — checked on a 5:30 run of Alsace
+Descente in the Polo R5, cold start at 19.64 °C on all four, finishing 66/69
+front and 52/53 rear. It is a real per-wheel model, not a clock: sorting the
+heating rate by steering direction, the outside pair heats about three times
+faster than the inside pair and the sign flips with the corner (+0.205 vs
++0.062 K/s in left-handers, the mirror in right-handers), with wheel load
+confirming which pair was loaded. `tyreTemp` carries the same number to within
+CSV rounding — one field, published twice — so use the core one. The
+inner/middle/outer surface triple is still flat zero, and since it sits
+*before* `tyreTemp` in the struct, that zero is the game's, not layout drift.
+
+Cooling is unproven either way: across that run the tyres gave back 0.4 K
+total, and the longest continuous fall was 1.33 s. Nothing there says the model
+lacks a cooling term — a hard stage never stops putting energy in — but a slow
+cruise would be needed to show one.
+
+Most of these are **not in the CSV** — a dead channel is four more columns per
+sample saying nothing. The exception is the tyre temperatures, logged since
+September 2026 so that a patch claiming to enable them can be checked against
+captured data rather than a glance at a live readout. All four AC1 fields go in
+(`tyreCoreTemperature`, `tyreTemp`, `tyreTempI/M/O`, Kelvin at source), because
+which one ACR drives is exactly what is in question:
+
+```bash
+uv run python scripts/check_tyre_temps.py runs/2026-09-13T*.csv
+```
+
+It classifies each field as dead (flat 0), placeholder (flat 363.15 K) or live,
+and flags four corners that move but move identically. It says nothing about
+whether live numbers are physically plausible — a placeholder curve would pass
+that test too. `acr-telemetry status` prints the same five fields raw for a
+quick look mid-stage, but only while the car is moving: the physics page is
+all zeros at a standstill, which reads exactly like a dead channel.
 
 Gotchas worth knowing:
 
