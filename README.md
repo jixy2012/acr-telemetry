@@ -2,7 +2,7 @@
 
 Full-rate telemetry capture for **Assetto Corsa Rally**, and a MoTeC i2 export.
 
-The game keeps no replays, no ghosts and no results files, and its shared memory
+The game's shared memory
 is overwritten ~330 times a second. Every run you drive without a logger
 attached is gone permanently. This records them.
 
@@ -27,7 +27,7 @@ You need:
   virtualenv and the one dependency (`numpy`, used only on the read side).
 - **MoTeC i2 Pro**, free from
   [motec.com.au](https://www.motec.com.au/i2/i2downloads/). Only needed to
-  *open* the logs; the exporter writes `.ld` files without it.
+  *open* the logs; the exporter from this project writes `.ld` files.
 
 No configuration, no plugin, no game-side setup. Check it can see the game —
 load a stage and **get the car moving first**, because the physics page reads
@@ -53,14 +53,14 @@ Leave it running and drive. It records every stage run until you Ctrl+C.
 waits for ACR to appear, records every stage run, and goes back to waiting when
 the game closes. It never needs restarting by hand, and a run in progress is
 always written out even if the game quits or you Ctrl+C mid-stage. While idle it
-polls twice a second and costs nothing.
+polls twice a second for recorded channels, watching for starts.
 
 To have it always on, put a shortcut to
 [`scripts/start-logger-hidden.vbs`](scripts/start-logger-hidden.vbs) in your
 Startup folder (`Win+R` → `shell:startup`). It launches with no console window
 and logs to `runs/logger.log`. To stop it auto-starting, delete the shortcut.
 
-Each run lands in `runs/` as three files:
+Each run gets recorded in `runs/` as three files:
 
 ```
 runs/2026-08-15T18-42-11_Greece-Loutraki---Aghii-Theodori_Skoda-Fabia-RS-Rally2.csv
@@ -70,13 +70,13 @@ runs/2026-08-15T18-42-11_Greece-Loutraki---Aghii-Theodori_Skoda-Fabia-RS-Rally2.
 
 | File | What it is |
 | --- | --- |
-| `.csv` | 123 named columns, ~96 rows/second. What the export and every script reads. |
+| `.csv` | 123 named columns, ~96 samples/second. What the export and every script reads. |
 | `.json` | car, stage, stage length, sample count, final stage time |
 | `.raw` | the shared-memory pages verbatim — every field, not just the chosen ones. See [The raw layer](#the-raw-layer). `--no-raw` skips it. |
 
-**Rows land at ~96 Hz, not 330.** The physics page ticks at ~330 Hz, but a row
+**Rows land at ~96 Hz, not 330.** The physics channels ticks at ~330 Hz, but a row
 is only written when `packetId` changes between polls, and at the default 100 Hz
-poll rate that captures every third or fourth frame — `packetId` steps by 3 and
+poll rate that captures every third or fourth frame: `packetId` steps by 3 and
 4, and the measured rate across 13 runs is 95.5–96.2 Hz. Intervals jitter
 between 10.0 and 10.8 ms.
 
@@ -104,9 +104,8 @@ uv run acr-telemetry export --stage "New Loutraki"
 different directory.
 
 **Runs of the same stage are concatenated so each becomes a lap.** This is what
-makes i2 usable here: time variance, overlays, the fastest-lap reference and the
-lap report are all lap-based, and a rally stage is a single lap. One file per run
-gets you almost none of it.
+makes i2's track mode usable here: time variance, overlays, comparisons, the fastest-lap reference and the
+lap report are all lap-based, and a rally stage is a single lap. 
 
 Output looks like this:
 
@@ -138,7 +137,7 @@ silently**.
 | --- | --- | --- | --- |
 | `clean` | yes | a whole stage, start to finish | — |
 | `aborted` | no | the stage clock was still running at the last sample, so the car never crossed the finish. Runs with no clock fall back to: covered < 50% of the longest attempt on the stage | a 20-second fragment averaged into a consistency number tells you nothing |
-| `limp` | no | < 5% of the run at full throttle | a damaged car, not a slow driver. Including one moved the standard deviation on a stage from ~2 s to 31 s |
+| `limp` | no | < 5% of the run at full throttle | a damaged car. Including one moved the standard deviation on a stage from ~2 s to 31 s |
 | `partial` | no | started > 25 m past the earliest start on the stage | resumed mid-stage. A fine drive and a useless lap: i2 measures distance from each beacon, so it sits permanently out of phase with the others, with nothing on screen to say so |
 | `reset` | no | contains a position jump the car could not physically have made | the stage was reset and the car put back on the road somewhere it never drove to. No longer one continuous drive, and its path draws a straight line across the track map |
 | `truncated` | yes | a circuit lap missing the piece between the line and the wrap | see [Circuits](#circuits) |
@@ -147,8 +146,8 @@ silently**.
 The jump test for `reset` is judged against the speed at the time rather than a
 fixed distance, so it scales from a hairpin to a flat-out straight.
 
-The default keeps `clean,truncated`, which is what you want for comparing pace.
-It is exactly wrong for studying a crash: incidents only exist in the runs it
+The default keeps `clean,truncated`, which is what's helpful for comparing pace.
+It's wrong for studying a crash: incidents only exist in the runs it
 throws away. On New Loutraki every incident on record sits between 769 and
 871 m, all of it in runs the default filter drops.
 
@@ -167,8 +166,7 @@ reset run had the car picked up mid-stage.
 
 Whether a run reached the end of the stage is answered by **the run itself**: the
 stage clock stops at the flying finish while `dist_m` keeps climbing through the
-roll-out to the stop control. That conjunction is the whole test, and it is what
-makes it safe — a pause or an interruption stalls the clock *and* the distance
+roll-out to the stop control. A pause or an interruption stalls the clock *and* the distance
 together, so only a real finish leaves the clock stopped with road still going
 by.
 
@@ -189,11 +187,6 @@ reports 18,676.8 m for a short one — in both cases another stage's length
 verbatim, Aghii Theodori's and La Bollène's. The wrong value is stable per stage,
 so a single run cannot tell you whether it got a good one.
 
-Runs recorded before `stage_clock_s` existed have nothing to judge on and keep
-using the relative rule. That is 58 of the 86 runs on disk; the first run
-carrying a clock is 2026-09-10, and every run since has one, so the set can only
-shrink in relevance.
-
 ### The roll-out is trimmed
 
 The game's clock stops at the flying finish, and the car then rolls on to the
@@ -210,7 +203,7 @@ and `sessionTimeLeft` are all flat zero or empty for an entire run, so there is
 no finish flag to read.
 
 Scanning *forward* for the first sample where the clock stops advancing does not
-work, and used to: `currentTime` is a formatted string the game rewrites per
+work: `currentTime` is a formatted string the game rewrites per
 frame and the logger samples at ~96 Hz, so it repeats a value for a few
 consecutive samples all the way down the stage. The first repeat landed 2.85 s
 into a 12 km run, putting the finish at 241 m and halving the lap time. Scanning
@@ -259,15 +252,11 @@ The `.ld` and its `.ldx` land in `Documents\MoTeC\i2\Logged Data\` if i2 is
 installed, so **i2 → Open** will already be pointing at them. Each stage run is a
 lap; use the lap list to overlay them and the fastest lap as the reference.
 
-**Generate the track map from GPS**, not lateral G: the synthesised
-`GPS Latitude`/`GPS Longitude` come from the game's world coordinates, whereas
-dead reckoning drifts badly on a point-to-point stage that never closes a loop.
+**Generate the track map from GPS**: the synthesised
+`GPS Latitude`/`GPS Longitude` come from the game's world coordinates.
 
 Three more things to keep in mind when reading traces:
 
-- **The distance axis is the useful one.** Stages are point-to-point and two runs
-  take different durations, so on a time axis the same corner lands somewhere
-  different on each and cannot be compared.
 - **Check the event comment.** Caveats about truncated or mixed-content logs are
   written there, because that is the part that travels with the file.
 - **`Steering Pos` is % of lock and `G Force Vert` has gravity added back** — see
@@ -311,7 +300,7 @@ looked on a date and it did not move, `unassessed` means nobody has ever checked
 Most are unassessed, which is worth knowing: it is a to-do list, not a set of
 conclusions.
 
-When you think a patch has changed something, follow
+When you think a patch has changed / enabled a channel, follow
 [docs/adding-a-channel.md](docs/adding-a-channel.md).
 
 ### What you get in i2
@@ -324,13 +313,7 @@ Press, Tyre Fx, Tyre Fy, Tyre Mz.
 
 Only channels the physics engine measures directly are exported. Derived
 quantities belong in i2 math channels where they stay visibly derived, and dead
-ACR channels are omitted entirely — **a flat trace sitting in i2 would look like
-real data a year from now.**
-
-**Tyre Temp and Tyre Press only appear when every run in the group carries
-them.** They reached the CSV in September 2026, so a group containing older runs
-exports without them rather than padding the missing laps flat. The export names
-what it left out; filtering to recent runs with `--stage`/`--car` gets them back.
+ACR channels are omitted entirely.
 
 Three caveats worth knowing before you read a trace:
 
@@ -360,70 +343,23 @@ than a glance at a live readout.
 
 Gotchas worth knowing:
 
-- **Temperatures are Kelvin**, not Celsius as in AC1.
+- **Temperatures are Kelvin**.
 - **`iCurrentTime` is 0.** The stage time exists only as the formatted string
-  `currentTime`, so the JSON carries `"07:22.516"` rather than milliseconds.
-- **`normalizedCarPosition` is 0.** Use `distanceTraveled / trackSplineLength`.
-- **`packetId` ticks at 330 Hz even when the payload is all zeros**, so it is
-  useless as a liveness test. `wheelsPressure[0] != 0` is the reliable one.
-
-### Tyre temperatures and pressure
-
-Both came alive in the September 2026 patch, and both are now exported.
-
-**`tyreCoreTemperature` is simulated per wheel** — checked on a 5:30 run of
-Alsace Descente in the Polo R5, cold start at 19.64 °C on all four, finishing
-66/69 front and 52/53 rear. It is a real per-wheel model, not a clock: sorting
-the heating rate by steering direction, the outside pair heats about three times
-faster than the inside pair and the sign flips with the corner (+0.205 vs
-+0.062 K/s in left-handers, the mirror in right-handers), with wheel load
-confirming which pair was loaded. `tyreTemp` carries the same number to within
-CSV rounding — one field, published twice — so use the core one. The
-inner/middle/outer surface triple is still flat zero, and since it sits *before*
-`tyreTemp` in the struct, that zero is the game's, not layout drift.
-
-Cooling is unproven either way: across that run the tyres gave back 0.4 K total,
-and the longest continuous fall was 1.33 s. Nothing there says the model lacks a
-cooling term — a hard stage never stops putting energy in — but a slow cruise
-would be needed to show one.
-
-**`wheelsPressure` came alive too**, confirmed 20 September 2026 on a 6:37 Greece
-Elatia – Zeli run in the Polo R5: 29.0 psi cold at 21.65 °C rising to ~32.5 psi
-hot, ~29,000 distinct values per corner, all four moving independently. The old
-"constant 32" reading was a hot tyre, not a hardcoded value.
-
-It is very nearly a function of tyre temperature — r = +0.9999 against
-`tyreCoreTemperature`, and the ideal gas law explains 95.4% of its variance — so
-read it as a second view of temperature rather than an independent channel. The
-0.23 psi residual is not load or deflection (r = -0.02 with wheel load, -0.03
-with suspension travel, across a 0–17,985 N load range) and is unattributed.
-
-To check the tyre fields yourself against captured runs:
-
-```bash
-uv run python scripts/check_tyre_temps.py runs/2026-09-13T*.csv
-```
-
-It classifies each field as dead (flat 0), placeholder (flat 363.15 K) or live,
-and flags four corners that move but move identically. It says nothing about
-whether live numbers are physically plausible — a placeholder curve would pass
-that test too. `acr-telemetry status` prints the same fields raw for a quick look
-mid-stage, but only while the car is moving.
+  `currentTime`.
+- **`normalizedCarPosition` is 0.**
+- **`packetId` ticks at 330 Hz even when the payload is all zeros.**
 
 ## The raw layer
 
 Every run is written twice. The CSV is the working copy — 123 named columns
-someone chose, and what the MoTeC export and all the scripts read. The `.raw`
+chosen, and what the MoTeC export and all the scripts read. The `.raw`
 file beside it is the archive: the shared-memory pages exactly as the game
-published them, all 200 physics values, nothing selected and nothing rounded.
+published them, all 200 physics values.
 
 ```bash
 uv run acr-telemetry raw runs/2026-09-13T16-59-42_Alsace-Descente_VW-Polo-GTI-R5.raw
 uv run acr-telemetry raw <file> --field physics.tyreCoreTemperature
 ```
-
-It costs roughly 2x the disk of the CSV and buys two things that cannot be bought
-later:
 
 - **A patch is answerable retroactively.** When Kunos wires up a field, you do
   not need to have predicted it. The runs you already have contain it.
