@@ -44,7 +44,14 @@ Three readings mean three different things:
 | --- | --- |
 | moves | the game is writing it |
 | flat `0` | probably never written — but see below |
-| flat `363.15`, `32`, or another round constant | an AC1 compatibility placeholder |
+| flat `363.15` or another round constant | an AC1 compatibility placeholder |
+
+**A round constant is not proof of a placeholder either.** `wheelsPressure` read
+a flat `32` through August and was written off as hardcoded. It was not: 32 psi
+is simply where a hot tyre sits, and once the September patch was checked against
+a run driven long enough to build heat, it ran 29.0 psi cold to ~32.5 hot, per
+wheel. What settled it was a long run rather than a glance — a short blast would
+have shown a flat number whether the field was dead or just cold.
 
 **Flat is not proof of dead.** `turbo` reads zero on a naturally aspirated car,
 `numberOfTyresOut` reads zero if you stayed on the road, and `pitLimiterOn`

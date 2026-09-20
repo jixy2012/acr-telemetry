@@ -89,9 +89,10 @@ PER_WHEEL_CHANNELS = [
     "tyre_temp_i",
     "tyre_temp_m",
     "tyre_temp_o",
-    # Read a constant 32 before the September 2026 patch. Logged now for the
-    # same reason as the temps: the patch that woke those up may have woken
-    # this, and a flat column is a cheap way to find out.
+    # Read a constant 32 before the September 2026 patch, and logged on the
+    # chance the patch that woke the temps had woken this too. It had:
+    # measured 20 Sept 2026 at 29.0 psi cold rising to ~32.5 hot, per wheel.
+    # The old reading was a hot tyre, not a hardcoded value.
     "tyre_pressure",
 ]
 

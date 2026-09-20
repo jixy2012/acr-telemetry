@@ -81,7 +81,7 @@ def write_ldx(path: Path, lap_times: list[float]) -> Path:
         details.appendChild(node)
 
     detail("Total Laps", str(len(lap_times)))
-    fastest = min(range(len(lap_times)), key=lambda i: lap_times[i])
+    fastest = lap_times.index(min(lap_times))
     detail("Fastest Time", _lap_time(lap_times[fastest]))
     detail("Fastest Lap", str(fastest + 1))
 

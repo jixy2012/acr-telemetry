@@ -127,7 +127,8 @@ class Physics(ctypes.Structure):
     def is_live(self) -> bool:
         """True when the game is actually simulating a moving car.
 
-        ``wheelsPressure`` reads a constant 32 while driving and drops to 0 the
+        ``wheelsPressure`` is always well above 0 while driving (29-32.5 psi,
+        simulated since the Sept 2026 patch) and drops to 0 the
         moment the sim stops publishing real physics, which makes it a cheap
         and reliable liveness flag. Do not use ``packetId`` for this — it keeps
         counting at 330 Hz on the results screen with an all-zero payload.

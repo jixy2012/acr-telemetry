@@ -33,6 +33,7 @@ def cmd_log(args) -> int:
 def cmd_export(args) -> int:
     """Write MoTeC .ld logs, one per stage and car."""
     from .export import (
+        _FINISH_SPREAD_WARN_M,
         agreed_finish,
         classify,
         export,
@@ -105,7 +106,9 @@ def cmd_export(args) -> int:
             continue
 
         # Judged against the longest attempt on this stage rather than the
-        # game's stage length, which reads 2x the real value.
+        # game's stage length, which is wrong on some stages: New Loutraki and
+        # Turini Montee each report another stage's trackSplineLength verbatim
+        # (10,773.6 and 18,676.8), stably, so it cannot be range-checked.
         reference = max(run.distance_m for _, run in loaded)
         reference_start = min(run.start_distance_m for _, run in loaded)
         spline = next(
@@ -139,7 +142,7 @@ def cmd_export(args) -> int:
         # to the stop control, which varies by however hard the driver braked --
         # 13-22 s on New Loutraki, several times the differences worth reading.
         if keep and not wraps:
-            finish = agreed_finish(keep)
+            finish, spread = agreed_finish(keep)
             if finish:
                 before = sum(r.duration_s for r in keep) / len(keep)
                 keep = [trim_to_finish(r, finish) for r in keep]
@@ -148,6 +151,15 @@ def cmd_export(args) -> int:
                     f"  finish at {finish:,.0f} m — trimmed the roll-out to the "
                     f"stop control (mean lap {before:.1f}s -> {after:.1f}s)"
                 )
+                # Clock-derived finishes agree to the metre. A wide spread means
+                # they are not all measuring the same line, and averaging it is
+                # exactly the wrong response.
+                if spread > _FINISH_SPREAD_WARN_M:
+                    print(
+                        f"  WARNING: these runs disagree about the finish by "
+                        f"{spread:,.0f} m — the trim is an average of "
+                        f"disagreeing values, so treat the lap times with care"
+                    )
             else:
                 print("  no usable stage clock — lap times include the roll-out")
         if not keep:
@@ -171,9 +183,18 @@ def cmd_export(args) -> int:
                 "comparable: an aborted run is a fragment, and a reset run had "
                 "the car put back on the road mid-stage."
             )
-        ld_path, _ = export(
+        ld_path, _, skipped = export(
             keep, out_dir / slug, args.hz, note="\n\n".join(notes)
         )
+        # Named, not silent: a channel missing from i2 because one old run
+        # in the group predates it is worth knowing, since filtering to the
+        # newer runs would get it back.
+        if skipped:
+            print(
+                f"  no {', '.join(skipped)} — not every run here carries "
+                f"it (recorded before the column existed); exported without "
+                f"rather than padding it flat"
+            )
         size_mb = ld_path.stat().st_size / 1e6
         print(f"  -> {ld_path}  ({size_mb:.1f} MB, {len(keep)} laps)")
 

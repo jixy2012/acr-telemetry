@@ -63,6 +63,28 @@ def _f(row: dict, key: str) -> float:
     return float(value) if value not in ("", None) else 0.0
 
 
+def _last_clock_advance(samples: dict[str, list[float]]) -> int | None:
+    """Index of the last sample at which the stage clock advanced, or None.
+
+    The one place that knows how to read the finish out of ``stage_clock_s``.
+    :func:`finish_distance` turns this into a distance and :attr:`Run.finished`
+    builds on that, so the definition of "where the timing stopped" exists once.
+
+    Scanned backwards on purpose. ``stage_clock_s`` is parsed from
+    ``graphics.currentTime``, a formatted string the game rewrites per frame
+    and the logger samples at ~96 Hz, so it repeats a value for a few
+    consecutive samples all the way down the stage -- the *first* repeat is a
+    sampling artifact, and on one 12 km run it landed 2.85 s in.
+    """
+    clock = samples.get("stage_clock_s")
+    if not clock or not any(clock):
+        return None
+    for i in range(len(clock) - 1, 0, -1):
+        if clock[i] > clock[i - 1] + 1e-6:
+            return i
+    return None
+
+
 @dataclass
 class Run:
     """One trimmed, resampled run, ready to become a lap."""
@@ -92,6 +114,29 @@ class Run:
     def full_throttle_frac(self) -> float:
         gas = self.samples["gas"]
         return sum(1 for g in gas if g > 0.95) / len(gas)
+
+    @property
+    def finished(self) -> bool | None:
+        """Whether this run crossed the flying finish, judged on its own.
+
+        The stage clock stops at the finish and ``dist_m`` keeps climbing
+        through the roll-out to the stop control. That conjunction is the whole
+        test, and it is what makes it safe: a pause or an interruption stalls
+        the clock *and* the distance together, so only a real finish leaves the
+        clock stopped with road still going by.
+
+        Measured, the two populations do not overlap -- runs that finished roll
+        out 125-290 m past the last clock tick, runs that did not have the
+        clock still advancing at their final sample, for a roll-out of exactly
+        zero.
+
+        ``None`` when the run predates ``stage_clock_s`` and there is nothing
+        to judge on; callers fall back to comparing against the other runs.
+        """
+        finish = finish_distance(self)
+        if finish is None:
+            return None
+        return self.samples["dist_m"][-1] - finish > _ROLLOUT_MIN_M
 
     @property
     def teleports(self) -> int:
@@ -296,6 +341,15 @@ _PER_WHEEL: list[tuple[str, str, str, str, int, object]] = [
     ("fx",          "Tyre Fx",    "Fx",    "N",      1, lambda v: v),
     ("fy",          "Tyre Fy",    "Fy",    "N",      1, lambda v: v),
     ("mz",          "Tyre Mz",    "Mz",    "Nm",     2, lambda v: v),
+    # Live since the Sept 2026 patch, and present only in runs recorded after
+    # each reached the CSV. export() drops a channel the runs in hand do not
+    # all carry rather than padding it flat. Kelvin at source, like brake temp.
+    ("tyre_core_temp", "Tyre Temp",  "TTemp", "C",   2, lambda v: v - 273.15),
+    # Near-redundant with Tyre Temp -- r = +0.9999, and the ideal gas law
+    # explains 95.4% of its variance. Exported anyway because psi is the unit
+    # a setup is actually expressed in, and the 0.23 psi residual is real and
+    # unattributed rather than rounding.
+    ("tyre_pressure",  "Tyre Press", "TPres", "psi", 3, lambda v: v),
 ]
 
 for _prefix, _name, _short, _unit, _dp, _convert in _PER_WHEEL:
@@ -349,15 +403,13 @@ NOT_EXPORTED: dict[str, str] = {
     "wheel_slip": "AC1's combined slip; slip_ratio and slip_angle are clearer",
     "contact": "road geometry, not car dynamics -- surveying output",
     "contact_normal": "road geometry, not car dynamics -- surveying output",
-    # Captured since Sept 2026 and live, but not yet given an i2 path. The
-    # dead ones stay out for the original reason: a flat line in i2 looks
-    # exactly like real data.
-    "tyre_core_temp": "live since the Sept 2026 patch -- wants an i2 channel",
+    # The dead ones stay out for the original reason: a flat line in i2 looks
+    # exactly like real data. tyre_core_temp and tyre_pressure are live and
+    # are exported.
     "tyre_temp": "duplicate of tyre_core_temp",
     "tyre_temp_i": "flat zero as of Sept 2026; a flat trace in i2 reads as data",
     "tyre_temp_m": "flat zero as of Sept 2026; a flat trace in i2 reads as data",
     "tyre_temp_o": "flat zero as of Sept 2026; a flat trace in i2 reads as data",
-    "tyre_pressure": "constant 32 as of Sept 2026; same reason",
 }
 
 _WHEEL_SUFFIX = re.compile(r"_(fl|fr|rl|rr)(_[xyz])?$")
@@ -399,8 +451,15 @@ def load_run(csv_path: Path, hz: int = DEFAULT_HZ) -> Run:
     return Run(meta=meta, hz=hz, samples=resample(rows, present, hz))
 
 
+# How much road must go by after the stage clock stops before that counts as a
+# roll-out to the stop control rather than a recording that simply ended. Real
+# roll-outs measure 125-290 m; a run that never finished gives exactly 0, so
+# anything in between is comfortably clear of both.
+_ROLLOUT_MIN_M = 20.0
+
 # A run covering less than this share of the longest attempt on the stage was
-# abandoned rather than driven.
+# abandoned rather than driven. Only consulted when the run has no stage clock
+# and ``Run.finished`` cannot answer directly.
 _ABORTED_FRACTION = 0.5
 # Below this much full throttle the car is damaged, not being driven slowly.
 # The 23:43 limp-home run managed 0% across four kilometres while healthy runs
@@ -413,9 +472,10 @@ _START_TOLERANCE_M = 25.0
 _WRAP_TOLERANCE_M = 20.0
 
 
-# A derived finish this far from the group's median is a bad timer, not a
-# different finish line. The good ones cluster inside ~11 m on a 5 km stage.
-_FINISH_TOLERANCE_M = 50.0
+# Runs of one stage spreading further apart than this are not measuring the
+# same finish line, and the export says so instead of averaging it away. Clock-
+# derived finishes on the runs here spread by at most 1 m.
+_FINISH_SPREAD_WARN_M = 5.0
 
 
 def finish_distance(run: Run) -> float | None:
@@ -426,55 +486,58 @@ def finish_distance(run: Run) -> float | None:
     rate the driver felt like braking. Including that in a lap time buries a
     2-4 s difference under five times as much noise.
 
-    Preferred source is the per-frame ``stage_clock_s`` column: the finish is
-    simply where it stops advancing. Runs recorded before that column existed
-    fall back to the final stage time from the JSON, which locates the same
-    point but inherits that field's occasional staleness -- so callers should
-    cross-check across runs with :func:`agreed_finish`.
+    Read from the per-frame ``stage_clock_s`` column, scanned from the end for
+    the last sample where it advanced. That is the only source: see
+    :func:`_last_clock_advance` for why it is scanned backwards, and below for
+    what used to be here instead.
+
+    Do **not** scan forward for the first sample where it stops advancing. That
+    finds a sampling artifact, not the finish: ``stage_clock_s`` is parsed from
+    ``graphics.currentTime``, a formatted string the game rewrites per frame,
+    and we sample it at ~96 Hz -- so it repeats a value for a few consecutive
+    samples all the way down the stage. The first such repeat landed 2.85 s into
+    a 12 km run, putting the "finish" at 241 m and halving the lap time. Across
+    the runs on disk the forward scan lands anywhere from 153 m to 11,754 m;
+    the backward scan gives the same distance to the metre on every run of a
+    stage (11,769 m on six Wales Cwmbiga runs, 18,210 m on two Monte Carlo).
+
+    Runs recorded before ``stage_clock_s`` existed (everything before
+    10 September 2026) get ``None`` and go into i2 with the roll-out still
+    attached, which the export says on screen.
+
+    There used to be a fallback here that turned the final stage time in the
+    JSON into a sample index. It served nine laps, it could never serve more --
+    every run since carries a clock -- and it was wrong often enough to need a
+    consensus filter wrapped around it, putting the finish of a 1,213 m fragment
+    at 941 m. Deleting it took the filter with it. A legacy path is not worth
+    the machinery that keeps it safe.
+
+    A run that never finished has a clock still advancing at its last sample,
+    so this returns the end of the run and the trim becomes a no-op. That is
+    the right answer: there was no flying finish to cut at.
     """
-    clock = run.samples.get("stage_clock_s")
-    distances = run.samples["dist_m"]
-
-    if clock and any(clock):
-        last = clock[0]
-        for i, value in enumerate(clock):
-            if value > last + 1e-6:
-                last = value
-            elif i > 0 and last > 1.0:
-                # Stopped advancing, and the stage had actually started.
-                return distances[i]
-        return None
-
-    stated = run.meta.get("stage_time")
-    if not stated:
-        return None
-    try:
-        minutes, rest = stated.split(":")
-        seconds = int(minutes) * 60 + float(rest)
-    except (ValueError, AttributeError):
-        return None
-    index = int(round(seconds * run.hz))
-    return distances[index] if 0 <= index < len(distances) else None
+    i = _last_clock_advance(run.samples)
+    return run.samples["dist_m"][i] if i is not None else None
 
 
-def agreed_finish(runs: list[Run]) -> float | None:
-    """The finish distance the runs of a stage agree on.
+def agreed_finish(runs: list[Run]) -> tuple[float | None, float]:
+    """The finish distance for a stage, and how far the runs disagreed.
 
-    Individually a derived finish can be wrong -- two New Loutraki runs share
-    a stale ``03:28.531`` timer string and put the finish at 3,826 m and
-    5,352 m. Collectively they are convincing: the other six land within 11 m
-    of each other despite braking for the stop control at wildly different
-    rates, which is what shows the clock stops at a fixed point on the road
-    rather than when the car does.
+    Now that every finish comes from the clock, the runs of a stage land on the
+    same metre -- 11,769 m on six Wales Cwmbiga runs, 18,210 and 18,211 m on two
+    Monte Carlo runs in different cars, 11,861 m on both Elatia - Zeli runs.
+    So this averages rather than votes: there is no outlier to filter out, and
+    the median-and-tolerance filter that used to live here existed only to
+    survive the JSON fallback's noise.
+
+    The spread is returned rather than discarded. Runs of one stage disagreeing
+    by more than a metre or two would mean the clock is not stopping where this
+    assumes, and that is worth saying out loud rather than averaging away.
     """
-    found = sorted(d for d in (finish_distance(r) for r in runs) if d is not None)
+    found = [d for d in (finish_distance(r) for r in runs) if d is not None]
     if not found:
-        return None
-    median = found[len(found) // 2]
-    agreeing = [d for d in found if abs(d - median) <= _FINISH_TOLERANCE_M]
-    if not agreeing:
-        return None
-    return sum(agreeing) / len(agreeing)
+        return None, 0.0
+    return sum(found) / len(found), max(found) - min(found)
 
 
 def trim_to_finish(run: Run, finish_m: float) -> Run:
@@ -517,6 +580,16 @@ def classify(
     """Label a run ``clean``, ``aborted``, ``limp``, ``partial``, or -- on a
     circuit -- ``circuit-split`` and ``truncated``.
 
+    Whether a run reached the end of the stage is answered by the run itself
+    wherever possible -- :attr:`Run.finished` reads the stage clock stopping
+    while the car is still moving. The share-of-the-longest-attempt rule below
+    is the fallback for runs recorded before that column existed, and it is
+    only ever a proxy: it assumes the longest attempt on hand is a whole stage.
+    Where that assumption fails it fails silently and in the dangerous
+    direction -- a 4,299 m fragment was the longest run a given car had ever
+    made on a 11,930 m stage, so it passed as ``clean`` while its clock proves
+    it never finished.
+
     Averaging a limp-home into a consistency statistic is not a rounding
     error: including one moved the fleet standard deviation on this stage from
     about 2 s to 31 s.
@@ -538,7 +611,11 @@ def classify(
             return "circuit-split"
         return "truncated"
 
-    if run.distance_m < _ABORTED_FRACTION * reference_m:
+    finished = run.finished
+    if finished is False:
+        return "aborted"
+    # No clock to ask, so fall back to the relative proxy.
+    if finished is None and run.distance_m < _ABORTED_FRACTION * reference_m:
         return "aborted"
     if run.full_throttle_frac < _LIMP_THROTTLE_FRAC:
         return "limp"
@@ -551,12 +628,18 @@ def classify(
 
 def export(
     runs: list[Run], out_base: Path, hz: int = DEFAULT_HZ, note: str = ""
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, list[str]]:
     """Write one ``.ld`` plus its ``.ldx`` beacons for the given runs.
 
     Runs are concatenated so each becomes a lap in i2. That is what unlocks
     time variance, overlays and the lap report, none of which work across
     separate files.
+
+    Returns the two paths plus the CSV columns that had to be left out. A
+    channel is written only when *every* run in the group carries it: a run
+    recorded before that column existed simply has no value, and a lap padded
+    with zeros would show i2 a flat trace, which reads as real data. Dropping
+    the channel is the honest failure -- an absent trace cannot be misread.
     """
     if not runs:
         raise ValueError("nothing to export")
@@ -582,7 +665,11 @@ def export(
         comment=f"{summary}\n\n{note}" if note else summary,
     )
 
+    skipped: set[str] = set()
     for name, short, units, decimals, _source, derive in _MANIFEST:
+        if not all(_source in run.samples for run in runs):
+            skipped.add(_WHEEL_SUFFIX.sub("", _source))
+            continue
         samples: list[float] = []
         for run in runs:
             samples.extend(derive(run.samples, i) for i in range(run.sample_count))
@@ -599,4 +686,4 @@ def export(
 
     ld_path = log.write(out_base.with_suffix(".ld"))
     ldx_path = write_ldx(out_base.with_suffix(".ldx"), [r.span_s for r in runs])
-    return ld_path, ldx_path
+    return ld_path, ldx_path, sorted(skipped)
