@@ -36,11 +36,6 @@ cd acr-telemetry
 uv sync
 ```
 
-`uv sync` reads `pyproject.toml` and `uv.lock`, fetches Python 3.13 if needed,
-creates `.venv/` and installs the one dependency (`numpy`, used only on the read
-side). Every command below is run through `uv run`, which keeps that environment
-up to date on its own, so `uv sync` is only needed once to pull everything down.
-
 ### Install MoTeC i2 Pro
 
 Free from [motec.com.au](https://www.motec.com.au/i2/i2downloads/). It is only
@@ -232,6 +227,7 @@ cannot re-collect. See [docs/adding-a-channel.md](docs/adding-a-channel.md).
   [Circuits](docs/circuits.md). The two derivations the export depends on.
 - [Adding a channel](docs/adding-a-channel.md). What to do when a patch looks
   like it enabled a field.
+- [Roadmap](docs/roadmap.md). What is done and what is next.
 
 Which channels are captured and exported is recorded in code rather than here,
 because a list in a document goes stale silently:
@@ -239,22 +235,6 @@ because a list in a document goes stale silently:
 ```bash
 uv run acr-telemetry channels
 ```
-
-## Roadmap
-
-- [x] MoTeC `.ld` export, ported from [`sim-to-motec`](https://github.com/GeekyDeaks/sim-to-motec),
-      round-trip verified against [`gotzl/ldparser`](https://github.com/gotzl/ldparser).
-- [x] Raw capture layer, verbatim shared-memory pages alongside the CSV.
-- [ ] Channel ledger: scan the raw archive and report, per field, whether it
-      ever varies and across how many cars, stages and game versions. Makes
-      patch day a one-command diff. A field that never moves is reported as
-      *not observed to vary*, never as "disabled": `turbo` reads zero on a
-      naturally aspirated car and `numberOfTyresOut` reads zero if you stay on
-      the road, and neither is evidence about the game.
-- [ ] Export reads the ledger, so flat channels are marked rather than dropped.
-- [ ] Delta-over-distance between two runs on the same stage.
-- [ ] Derived channels: coast time while yaw is stable, steering corrections
-      with stage geometry removed, understeer/oversteer balance.
 
 ## Design rules
 
