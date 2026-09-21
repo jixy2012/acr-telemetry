@@ -4,7 +4,7 @@ What to do when a patch looks like it enabled something, or when you want a
 field that is not being captured. It is the same walk either way.
 
 The inventory of *which* fields are captured is not in this document on
-purpose — it lives in [`inventory.py`](../src/acr_telemetry/inventory.py) and
+purpose. It lives in [`inventory.py`](../src/acr_telemetry/inventory.py) and
 [`export.py`](../src/acr_telemetry/export.py), where a coverage check fails if
 a field is unaccounted for. A list in a doc goes stale silently. To read it:
 
@@ -21,7 +21,7 @@ deliberately not exported.
 
 ## 1. Look, before assuming
 
-Load a stage and **get the car moving** — the physics page is all zeros at a
+Load a stage and **get the car moving**, because the physics page is all zeros at a
 standstill, which is indistinguishable from a dead channel.
 
 ```bash
@@ -36,28 +36,28 @@ uv run acr-telemetry raw runs/<run>.raw --field physics.<fieldName>
 ```
 
 **This works on runs recorded before you thought to ask.** That is what the raw
-layer is for — every field is in there, whether or not it has a CSV column.
+layer is for. Every field is in there, whether or not it has a CSV column.
 
 Three readings mean three different things:
 
 | Reading | What it means |
 | --- | --- |
 | moves | the game is writing it |
-| flat `0` | probably never written — but see below |
+| flat `0` | probably never written, but see below |
 | flat `363.15` or another round constant | an AC1 compatibility placeholder |
 
 **A round constant is not proof of a placeholder either.** `wheelsPressure` read
 a flat `32` through August and was written off as hardcoded. It was not: 32 psi
 is simply where a hot tyre sits, and once the September patch was checked against
 a run driven long enough to build heat, it ran 29.0 psi cold to ~32.5 hot, per
-wheel. What settled it was a long run rather than a glance — a short blast would
+wheel. What settled it was a long run rather than a glance. A short blast would
 have shown a flat number whether the field was dead or just cold.
 
 **Flat is not proof of dead.** `turbo` reads zero on a naturally aspirated car,
 `numberOfTyresOut` reads zero if you stayed on the road, and `pitLimiterOn`
 reads zero because this is rally. The channel may be fine and the situation may
 simply never have asked the question. Where a field can be provoked
-deliberately — put two wheels off the road, tap a barrier, pull the limiter —
+deliberately (put two wheels off the road, tap a barrier, pull the limiter),
 one such run settles it better than a hundred clean ones.
 
 ## 2. Capture it
@@ -71,7 +71,7 @@ In [`inventory.py`](../src/acr_telemetry/inventory.py), move the field from
 `NOT_RECORDED` to `RECORDED`. `check_coverage()` fails if it ends up in both or
 neither, and the logger prints that warning at startup.
 
-Then check the header and the row still line up — this is the one mistake that
+Then check the header and the row still line up. This is the one mistake that
 silently shifts every column:
 
 ```bash
@@ -101,17 +101,22 @@ real data, and it is the kind of thing you believe at 11pm two months later.
 
 Units are converted at this boundary, not at capture. ACR publishes Kelvin,
 radians, and 0–1 pedals; MoTeC expects °C and degrees. Each conversion in
-`_MANIFEST` names the anchor it was checked against — do the same.
+`_MANIFEST` names the anchor it was checked against. Do the same.
 
 ## 4. Write down what you saw
 
-If the finding changes what is known about the game — a channel woke up, a
-placeholder moved, a field turned out to be a duplicate — put it in the README
-under *Known dead channels*, with the date and the run it came from.
+A finding belongs in code, next to the thing it describes. A channel waking up,
+a placeholder moving, a field turning out to be a duplicate: put the date, the
+numbers and the run it came from in the `RECORDED` / `NOT_RECORDED` note in
+[`inventory.py`](../src/acr_telemetry/inventory.py), or the `NOT_EXPORTED` note
+in [`export.py`](../src/acr_telemetry/export.py). Those are what
+`acr-telemetry channels` prints, so they stay in front of whoever asks next.
 
-Record what you measured, not what you concluded. "Flat zero across one run of
-one stage in one car" ages well; "dead" does not, and this project has now been
-wrong about that twice.
+The README does not carry a channel list. One in a document goes stale silently,
+and this project has been wrong about a channel being dead twice.
+
+Record what you measured rather than what you concluded. "Flat zero across one
+run of one stage in one car" ages well. "Dead" does not.
 
 ---
 
@@ -129,5 +134,5 @@ The September 2026 patch, start to finish:
    sorted by steering direction, outside pair heating ~3x faster than the
    inside pair, sign flipping with the corner, with wheel load confirming which
    pair was loaded.
-5. README updated with the numbers and the date. The MoTeC path is still open —
-   `tyre_core_temp` sits in `NOT_EXPORTED` marked as wanting a channel.
+5. Inventory notes updated with the numbers and the date, and both fields
+   given i2 channels once they were shown to be live.
