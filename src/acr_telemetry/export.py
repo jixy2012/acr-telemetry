@@ -305,6 +305,16 @@ _MANIFEST: list[tuple[str, str, str, int, str, callable]] = [
     # Gravity is removed at source (mean 0.004 over a run), but i2 and every
     # rally workspace expect ~1 G standing still, so it is added back.
     ("G Force Vert",  "G Vert",   "G",     3, "acc_y",     lambda c, i: c["acc_y"][i] + 1.0),
+    # Measured body rotation, radians/s at source. Not named "Yaw Rate": the
+    # stock i2 workspace defines a math channel of that name as lateral G /
+    # speed, which is path curvature and misses every change of slip angle --
+    # on New Loutraki it reads +21 deg/s while this reads -31 as a slide is
+    # caught. Checked against d(heading)/dt: r = -0.9992 over one run.
+    #
+    # Sign anchored against wheel loads: positive = LEFT turn (load on the
+    # right-hand pair) in 95.4% of 192,597 samples under 3 deg body slip across
+    # 85 runs, and it shares G Force Lat's sign 96.2% of the time.
+    ("Yaw Rate Game", "YawGame",  "deg/s", 2, "yaw_rate",  lambda c, i: math.degrees(c["yaw_rate"][i])),
     ("Altitude",      "alt",      "m",     3, "car_y",     lambda c, i: c["car_y"][i]),
     ("GPS Latitude",  "GPSLat",   "deg",   7, "car_z",
      lambda c, i: _LAT0 + _NORTH_SIGN * c["car_z"][i] / _M_PER_DEG_LAT),
@@ -319,7 +329,7 @@ _SOURCE_KEYS = {
     "stage_clock_s": True,
     "t_s": True, "dist_m": True, "speed_kmh": True, "gas": True, "brake": True,
     "clutch": True, "steer": True, "gear": False, "rpm": True, "acc_x": True,
-    "acc_y": True, "acc_z": True, "car_x": True, "car_y": True, "car_z": True,
+    "acc_y": True, "acc_z": True, "yaw_rate": True, "car_x": True, "car_y": True, "car_z": True,
 }
 
 # Per-wheel suspension and tyre channels, all measured directly by the physics
@@ -385,7 +395,6 @@ NOT_EXPORTED: dict[str, str] = {
     "heading": "radians, and i2 draws the map from the GPS channels instead",
     "pitch": "radians; add as a math channel if it is ever wanted",
     "roll": "radians; add as a math channel if it is ever wanted",
-    "yaw_rate": "available, but the G traces cover cornering in practice",
     "pitch_rate": "rarely read on a rally stage",
     "roll_rate": "rarely read on a rally stage",
     "vel_x": "world-frame; Ground Speed is the useful scalar",
