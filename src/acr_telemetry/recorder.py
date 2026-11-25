@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .inventory import check_coverage
 from .layout import Graphics, Physics, Static
+from .obs import ObsSettings, RunVideo
 from .raw import RawWriter
 from .shm import GameConnection, SegmentUnavailable, sanity_check
 
@@ -134,6 +135,13 @@ def parse_stage_time(text: str) -> float | None:
         return None
 
 
+def _patch_video(meta_path: Path, video: dict) -> None:
+    """Fill a finished run's video details into its .json."""
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["video"] = video
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
 def _slug(text: str) -> str:
     text = re.sub(r"[^\w\s-]", "", text).strip()
     text = re.sub(r"[\s_]+", "-", text)
@@ -209,10 +217,16 @@ class Recorder:
     # file is the archive -- it is the one that can answer a question nobody
     # has thought of yet.
     raw: bool = True
+    # Off unless asked for. With settings, every run is also recorded by OBS
+    # and its .json says where the video is and how its clock maps onto t_s.
+    obs: ObsSettings | None = None
 
     _fh: object | None = field(default=None, init=False, repr=False)
     _path: Path | None = field(default=None, init=False, repr=False)
     _raw: RawWriter | None = field(default=None, init=False, repr=False)
+    _video: RunVideo | None = field(default=None, init=False, repr=False)
+    # Recordings told to stop whose worker may still be waiting on OBS.
+    _stopping: list[RunVideo] = field(default_factory=list, init=False, repr=False)
 
     # ---- sample extraction ------------------------------------------------
     @staticmethod
@@ -303,6 +317,8 @@ class Recorder:
         self._writer = csv.writer(self._fh)
         if self._raw is not None:
             self._raw.reopen()
+        if self._video is not None:
+            self._video.resume()
 
     def _suspend_file(self, static, stats: RunStats, duration: float,
                       time_str: str) -> None:
@@ -318,6 +334,10 @@ class Recorder:
             self._writer = None
         if self._raw is not None:
             self._raw.suspend()
+        # Paused, not stopped: this may be the game's pause menu, and a resumed
+        # run should stay one video. The results screen is never recorded.
+        if self._video is not None:
+            self._video.pause()
         stats.duration_s = duration
         stats.stage_time = time_str
         self._write_meta(static, stats)
@@ -340,6 +360,14 @@ class Recorder:
                 started_at=datetime.now().isoformat(timespec="seconds"),
                 csv=self._path.name,
             )
+        if self.obs is not None:
+            meta_path = self._path.with_suffix(".json")
+            self._video = RunVideo(
+                self.obs, self._say,
+                on_saved=lambda video: _patch_video(meta_path, video),
+                after=self._stopping,
+            )
+            self._video.start()
         return self._path
 
     def _close_run(self, static, gfx, stats: RunStats) -> None:
@@ -354,7 +382,15 @@ class Recorder:
             )
             self._raw = None
         self._write_meta(static, stats)
+        # After the last metadata write, not before: the worker fills in the
+        # video's path once OBS has finalised the file, and from here on it is
+        # the only writer of this run's .json.
+        if self._video is not None:
+            self._video.stop()
+            self._stopping = [v for v in self._stopping if v.busy]
+            self._stopping.append(self._video)
         self._path = None
+        self._video = None
 
     def _write_meta(self, static, stats: RunStats) -> None:
         if self._path is None:
@@ -378,7 +414,10 @@ class Recorder:
             "stage_time": stats.stage_time,
             "csv": self._path.name,
             "raw": self._path.with_suffix(".raw").name if self.raw else None,
-            "schema_version": 3,
+            # None when OBS was not asked for; otherwise present even when the
+            # recording failed, with the reason, so a missing video is explained.
+            "video": self._video.meta() if self._video is not None else None,
+            "schema_version": 4,
         }
         self._path.with_suffix(".json").write_text(
             json.dumps(meta, indent=2), encoding="utf-8"
@@ -393,6 +432,15 @@ class Recorder:
         our struct declarations no longer match what ACR publishes, and logging
         on would silently corrupt a dataset that cannot be re-collected.
         """
+        try:
+            self._run_forever()
+        finally:
+            # The OBS worker is a daemon thread, so give a just-stopped
+            # recording a moment to be finalised and noted before exiting.
+            for video in self._stopping:
+                video.join(timeout=5.0)
+
+    def _run_forever(self) -> None:
         self._say(f"logging at {self.hz} Hz -> {self.out_dir.resolve()}")
         announced_wait = False
         while True:
@@ -615,6 +663,11 @@ class Recorder:
                         if stats.start_dist is None:
                             stats.start_dist = gfx.distanceTraveled
                         stats.end_dist = gfx.distanceTraveled
+
+                    if self._video is not None:
+                        # drive_clock is t_s as of loop_start, and runs in real
+                        # time while live, so the pair maps any instant nearby.
+                        self._video.tick(drive_clock, loop_start)
 
                 elif recording and not live:
                     if idle_since is None:

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import unicodedata
 from pathlib import Path
 
+from .obs import ObsSettings
 from .recorder import Recorder
 from .shm import GameConnection, SegmentUnavailable, sanity_check
 
@@ -19,7 +21,14 @@ def _default_export_dir() -> Path:
 
 
 def cmd_log(args) -> int:
-    rec = Recorder(out_dir=Path(args.out), hz=args.hz, raw=args.raw)
+    obs = None
+    if args.obs:
+        obs = ObsSettings(
+            host=args.obs_host,
+            port=args.obs_port,
+            password=args.obs_password or os.environ.get("ACR_OBS_PASSWORD"),
+        )
+    rec = Recorder(out_dir=Path(args.out), hz=args.hz, raw=args.raw, obs=obs)
     try:
         rec.run()
     except SegmentUnavailable as exc:
@@ -363,6 +372,20 @@ def main() -> int:
         "roughly 2x the disk, at the cost of the archive: the CSV holds the "
         "119 columns someone chose, the raw file holds everything the game "
         "published",
+    )
+    p_log.add_argument(
+        "--obs",
+        action="store_true",
+        help="also record every run with OBS, via its WebSocket server, and "
+        "write where the video is and how it syncs into the run's .json. If "
+        "OBS is unreachable the run is still captured, just without video",
+    )
+    p_log.add_argument("--obs-host", default="localhost", help="OBS WebSocket host")
+    p_log.add_argument("--obs-port", type=int, default=4455, help="OBS WebSocket port")
+    p_log.add_argument(
+        "--obs-password",
+        help="OBS WebSocket password. Defaults to the ACR_OBS_PASSWORD "
+        "environment variable, which keeps it out of shortcuts and shell history",
     )
     p_log.set_defaults(func=cmd_log)
 
