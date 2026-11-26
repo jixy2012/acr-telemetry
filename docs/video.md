@@ -17,17 +17,24 @@ co-driver's call on the audio, is what tells you *why*.
 4. Pick where recordings go under **Settings → Output → Recording Path**. The
    `.json` stores the absolute path OBS reports.
 
-Then run the logger with the password in the environment rather than on the
-command line:
+Put the password in a `.env` file in the repo folder. It is gitignored, so it
+stays on this machine:
 
-```powershell
-$env:ACR_OBS_PASSWORD = "..."
+```
+ACR_OBS_PASSWORD=...
+```
+
+Then run the logger from the repo folder:
+
+```bash
 uv run acr-telemetry log --obs
 ```
 
-For the always-on startup logger, set `ACR_OBS_PASSWORD` as a user environment
-variable and add `--obs` to the `log` line in
-[`scripts/start-logger.cmd`](../scripts/start-logger.cmd).
+`log` reads `.env` from the working directory. A variable already set in the
+shell takes precedence over the file, and `--obs-password` overrides both. For the
+always-on startup logger, add `--obs` to the `log` line in
+[`scripts/start-logger.cmd`](../scripts/start-logger.cmd). It runs from the
+repo folder, so it picks up the same `.env`.
 
 ## What the logger does with OBS
 

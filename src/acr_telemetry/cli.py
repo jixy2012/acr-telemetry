@@ -20,7 +20,30 @@ def _default_export_dir() -> Path:
     return logged if logged.is_dir() else Path("export")
 
 
+def load_dotenv(path: Path = Path(".env")) -> None:
+    """Read KEY=value lines from a .env file into the environment.
+
+    Relative to the working directory, like the default `runs/`, which is the
+    repo when started from it or by scripts/start-logger.cmd. A variable that
+    is already set wins, so the shell can always override the file.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
 def cmd_log(args) -> int:
+    load_dotenv()
     obs = None
     if args.obs:
         obs = ObsSettings(
@@ -384,8 +407,9 @@ def main() -> int:
     p_log.add_argument("--obs-port", type=int, default=4455, help="OBS WebSocket port")
     p_log.add_argument(
         "--obs-password",
-        help="OBS WebSocket password. Defaults to the ACR_OBS_PASSWORD "
-        "environment variable, which keeps it out of shortcuts and shell history",
+        help="OBS WebSocket password. Defaults to ACR_OBS_PASSWORD, from the "
+        "environment or a .env file in the working directory, which keeps it "
+        "out of shortcuts and shell history",
     )
     p_log.set_defaults(func=cmd_log)
 

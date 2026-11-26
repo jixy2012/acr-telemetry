@@ -93,10 +93,17 @@ runs/2026-08-15T18-42-11_Greece-Loutraki---Aghii-Theodori_Skoda-Fabia-RS-Rally2.
 Add `--obs` and every run is also recorded by
 [OBS Studio](https://obsproject.com/) (28 or later), with the game audio and
 the co-driver's calls. Enable OBS's remote control once under **Tools →
-WebSocket Server Settings**, then:
+WebSocket Server Settings**, put its password in a `.env` file in the repo
+(gitignored):
+
+```
+ACR_OBS_PASSWORD=...
+```
+
+then:
 
 ```bash
-ACR_OBS_PASSWORD=... uv run acr-telemetry log --obs
+uv run acr-telemetry log --obs
 ```
 
 The logger starts the recording when a run starts, pauses it with the game, and
