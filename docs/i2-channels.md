@@ -1,6 +1,6 @@
 # MoTeC i2 channels
 
-What `acr-telemetry export` writes into a `.ld`. 58 channels: 14 car-level and
+What `acr-telemetry export` writes into a `.ld`. 59 channels: 15 car-level and
 11 per-wheel across four corners.
 
 Channel names and units are what i2 shows. The source column is the CSV column
@@ -22,6 +22,7 @@ reports.
 | G Force Lat | `G Lat` | G | `acc_x` | |
 | G Force Long | `G Long` | G | `acc_z` | Positive under acceleration, negative under braking |
 | G Force Vert | `G Vert` | G | `acc_y` | Includes gravity, so it reads ~1 G at rest |
+| Yaw Rate Game | `YawGame` | deg/s | `yaw_rate` | The game's measured body rotation. Positive is a left turn. Not the same as the workspace's `Yaw Rate` math channel, which is lateral G / speed and misses slides |
 | Altitude | `alt` | m | `car_y` | World height |
 | GPS Latitude | `GPSLat` | deg | `car_z` | Synthesised from world coordinates. Use these for the track map |
 | GPS Longitude | `GPSLong` | deg | `car_x` | Synthesised from world coordinates |
