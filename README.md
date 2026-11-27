@@ -88,6 +88,30 @@ runs/2026-08-15T18-42-11_Greece-Loutraki---Aghii-Theodori_Skoda-Fabia-RS-Rally2.
 
 `runs/` is gitignored. It is large, personal, and regenerable only by driving.
 
+### With video
+
+Add `--obs` and every run is also recorded by
+[OBS Studio](https://obsproject.com/) (28 or later), with the game audio and
+the co-driver's calls. Enable OBS's remote control once under **Tools →
+WebSocket Server Settings**, put its password in a `.env` file in the repo
+(gitignored):
+
+```
+ACR_OBS_PASSWORD=...
+```
+
+then:
+
+```bash
+uv run acr-telemetry log --obs
+```
+
+The logger starts the recording when a run starts, pauses it with the game, and
+stops it when the run is saved. The run's `.json` gets the video's path and the
+measured mapping from `t_s` to video time. If OBS is not running, the run is
+captured as usual and the `.json` says why there is no video. See
+[Video](docs/video.md).
+
 ## Export to .ld
 
 ```bash
@@ -222,6 +246,7 @@ cannot re-collect. See [docs/adding-a-channel.md](docs/adding-a-channel.md).
 - [How it reads the game](docs/how-it-reads-the-game.md). Shared-memory
   segments, sample rate, and the quirks of this particular shim.
 - [The raw layer](docs/raw-layer.md). What the `.raw` archive holds and why.
+- [Video](docs/video.md). Recording each run with OBS, and reading the sync.
 - [MoTeC i2 channels](docs/i2-channels.md). Everything in the `.ld`.
 - [Finding the finish](docs/finish-detection.md) and
   [Circuits](docs/circuits.md). The two derivations the export depends on.

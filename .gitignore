@@ -13,3 +13,6 @@ build/
 # editors
 .vscode/
 .idea/
+
+# local settings, e.g. the OBS WebSocket password
+.env
